@@ -1,0 +1,7 @@
+id=zygisk_spoofer
+name=Zygisk Device Spoofer
+version=v1.0.0
+versionCode=1
+author=fawz-cloud
+description=Universal device identity spoofer with WebUI. Supports KernelSU, APatch, and Magisk.
+updateJson=

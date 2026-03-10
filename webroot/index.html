@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Device Spoofer</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <div class="logo-icon-wrap">
+                        <i data-lucide="shield-check" class="icon-logo"></i>
+                    </div>
+                    <div>
+                        <h1>Device Spoofer</h1>
+                        <p class="subtitle">Universal Identity Manager</p>
+                    </div>
+                </div>
+                <div class="status-badge" id="statusBadge">
+                    <span class="status-dot"></span>
+                    <span id="statusText">Loading...</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Quick Actions -->
+        <section class="section">
+            <div class="section-header">
+                <i data-lucide="zap" class="icon-section"></i>
+                <h2 class="section-title">Quick Actions</h2>
+            </div>
+            <div class="action-grid">
+                <button class="btn btn-primary btn-large" id="btnBurnSpoof" onclick="burnAndSpoof()">
+                    <i data-lucide="flame" class="btn-icon"></i>
+                    <div>
+                        <span class="btn-label">Burn & Spoof</span>
+                        <span class="btn-desc">Wipe + New Identity</span>
+                    </div>
+                </button>
+                <button class="btn btn-secondary" id="btnRandomize" onclick="randomizeAll()">
+                    <i data-lucide="dice-5" class="btn-icon"></i>
+                    <div>
+                        <span class="btn-label">Randomize</span>
+                        <span class="btn-desc">Generate New ID</span>
+                    </div>
+                </button>
+                <button class="btn btn-danger" id="btnWipeAll" onclick="wipeAllTargets()">
+                    <i data-lucide="trash-2" class="btn-icon"></i>
+                    <div>
+                        <span class="btn-label">Wipe All</span>
+                        <span class="btn-desc">Clean Target Apps</span>
+                    </div>
+                </button>
+                <button class="btn btn-accent" id="btnSave" onclick="saveConfig()">
+                    <i data-lucide="save" class="btn-icon"></i>
+                    <div>
+                        <span class="btn-label">Save Config</span>
+                        <span class="btn-desc">Apply Changes</span>
+                    </div>
+                </button>
+            </div>
+        </section>
+
+        <!-- Target Apps -->
+        <section class="section">
+            <div class="section-header">
+                <i data-lucide="layout-grid" class="icon-section"></i>
+                <h2 class="section-title">Target Apps</h2>
+            </div>
+            <div class="input-group">
+                <input type="text" id="newAppInput" placeholder="com.shopee.id" class="input" />
+                <button class="btn btn-small btn-primary" onclick="addTargetApp()">
+                    <i data-lucide="plus" class="icon-inline"></i> Add
+                </button>
+            </div>
+            <div class="app-list" id="appList"></div>
+        </section>
+
+        <!-- Device Identity -->
+        <section class="section">
+            <div class="section-header">
+                <i data-lucide="fingerprint" class="icon-section"></i>
+                <h2 class="section-title">Device Identity</h2>
+            </div>
+            <div class="identity-grid">
+                <div class="field"><label>Android ID</label><input type="text" id="android_id" class="input mono" /></div>
+                <div class="field"><label>GSF ID</label><input type="text" id="gsf_id" class="input mono" /></div>
+                <div class="field"><label>IMEI</label><input type="text" id="imei" class="input mono" /></div>
+                <div class="field"><label>MEID</label><input type="text" id="meid" class="input mono" /></div>
+                <div class="field"><label>Serial Number</label><input type="text" id="serial" class="input mono" /></div>
+                <div class="field"><label>Bootloader</label><input type="text" id="bootloader" class="input mono" /></div>
+            </div>
+        </section>
+
+        <!-- Network -->
+        <section class="section">
+            <div class="section-header">
+                <i data-lucide="wifi" class="icon-section"></i>
+                <h2 class="section-title">Network</h2>
+            </div>
+            <div class="identity-grid">
+                <div class="field"><label>WiFi MAC</label><input type="text" id="mac_address" class="input mono" /></div>
+                <div class="field"><label>Bluetooth MAC</label><input type="text" id="bluetooth_mac" class="input mono" /></div>
+                <div class="field"><label>WiFi SSID</label><input type="text" id="wifi_ssid" class="input" /></div>
+                <div class="field"><label>WiFi BSSID</label><input type="text" id="wifi_bssid" class="input mono" /></div>
+            </div>
+        </section>
+
+        <!-- Build Properties -->
+        <section class="section">
+            <div class="section-header">
+                <i data-lucide="cpu" class="icon-section"></i>
+                <h2 class="section-title">Build Properties</h2>
+            </div>
+            <div class="identity-grid">
+                <div class="field"><label>Model</label><input type="text" id="model" class="input" /></div>
+                <div class="field"><label>Brand</label><input type="text" id="brand" class="input" /></div>
+                <div class="field"><label>Manufacturer</label><input type="text" id="manufacturer" class="input" /></div>
+                <div class="field"><label>Device</label><input type="text" id="device" class="input mono" /></div>
+                <div class="field"><label>Product</label><input type="text" id="product" class="input mono" /></div>
+                <div class="field"><label>Board</label><input type="text" id="board" class="input mono" /></div>
+                <div class="field"><label>Hardware</label><input type="text" id="hardware" class="input mono" /></div>
+                <div class="field"><label>Build ID</label><input type="text" id="build_id" class="input mono" /></div>
+                <div class="field full-width"><label>Fingerprint</label><input type="text" id="fingerprint" class="input mono" /></div>
+                <div class="field full-width"><label>Display</label><input type="text" id="display" class="input mono" /></div>
+                <div class="field"><label>Build Type</label><input type="text" id="build_type" class="input mono" /></div>
+                <div class="field"><label>Build Tags</label><input type="text" id="build_tags" class="input mono" /></div>
+                <div class="field"><label>Build User</label><input type="text" id="build_user" class="input mono" /></div>
+                <div class="field"><label>Build Host</label><input type="text" id="build_host" class="input mono" /></div>
+                <div class="field full-width"><label>Incremental</label><input type="text" id="incremental" class="input mono" /></div>
+            </div>
+        </section>
+
+        <!-- Radio / Telephony -->
+        <section class="section">
+            <div class="section-header">
+                <i data-lucide="signal" class="icon-section"></i>
+                <h2 class="section-title">Radio / Telephony</h2>
+            </div>
+            <div class="identity-grid">
+                <div class="field full-width"><label>Baseband Version</label><input type="text" id="baseband" class="input mono" /></div>
+                <div class="field"><label>Operator Name</label><input type="text" id="operator_name" class="input" /></div>
+                <div class="field"><label>Operator Code</label><input type="text" id="operator_numeric" class="input mono" /></div>
+            </div>
+        </section>
+
+        <!-- Hardware Info -->
+        <section class="section">
+            <div class="section-header">
+                <i data-lucide="monitor-smartphone" class="icon-section"></i>
+                <h2 class="section-title">Hardware</h2>
+            </div>
+            <div class="identity-grid">
+                <div class="field"><label>GPU Renderer</label><input type="text" id="gl_renderer" class="input" /></div>
+                <div class="field"><label>GPU Vendor</label><input type="text" id="gl_vendor" class="input" /></div>
+                <div class="field"><label>Screen Density</label><input type="text" id="screen_density" class="input mono" /></div>
+                <div class="field"><label>Resolution</label><input type="text" id="screen_resolution" class="input mono" /></div>
+                <div class="field"><label>CPU ABI</label><input type="text" id="cpu_abi" class="input mono" /></div>
+                <div class="field"><label>SoC Model</label><input type="text" id="soc_model" class="input" /></div>
+                <div class="field full-width"><label>Hardware Serial</label><input type="text" id="hardware_serial" class="input mono" /></div>
+            </div>
+        </section>
+
+        <!-- Custom Wipe Directories -->
+        <section class="section">
+            <div class="section-header">
+                <i data-lucide="folder-x" class="icon-section"></i>
+                <h2 class="section-title">Custom Wipe Directories</h2>
+            </div>
+            <p class="hint">Additional folders in /sdcard/ to remove during wipe</p>
+            <div class="input-group">
+                <input type="text" id="newWipeDirInput" placeholder=".example_folder" class="input" />
+                <button class="btn btn-small btn-primary" onclick="addWipeDir()">
+                    <i data-lucide="plus" class="icon-inline"></i> Add
+                </button>
+            </div>
+            <div class="app-list" id="wipeDirList"></div>
+        </section>
+
+        <div class="toast" id="toast">
+            <i data-lucide="check-circle" class="toast-icon"></i>
+            <span id="toastText"></span>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+    <script>lucide.createIcons();</script>
+</body>
+</html>
