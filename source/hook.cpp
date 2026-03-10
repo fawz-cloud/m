@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sys/system_properties.h>
 #include <android/log.h>
 
@@ -127,9 +128,7 @@ static orig_system_property_get_t orig_system_property_get = nullptr;
 
 static int proxy_system_property_get(const char *name, char *value) {
     // Call original first
-    int ret = SHADOWHOOK_CALL_PREV(proxy_system_property_get,
-                                    orig_system_property_get_t,
-                                    name, value);
+    int ret = orig_system_property_get(name, value);
 
     // Intercept spoofed properties
     for (int i = 0; i < g_prop_map_count; i++) {
@@ -169,26 +168,28 @@ static bool should_hide_path(const char *pathname) {
 
 // Use memfd_create for spoofed file content (no SELinux issues, no disk trace)
 static int make_spoof_fd(const std::string &content) {
-#if __ANDROID_API__ >= 26
-    int fd = syscall(__NR_memfd_create, "jit-cache", 0);
-#else
-    // Fallback: pipe-based approach for older APIs
-    int pipefd[2];
-    if (pipe(pipefd) < 0) return -1;
-    write(pipefd[1], content.c_str(), content.size());
-    write(pipefd[1], "\n", 1);
-    close(pipefd[1]);
-    return pipefd[0]; // read end
+    // Try memfd_create first (no disk trace, no SELinux issues)
+    int fd = -1;
+#ifdef __NR_memfd_create
+    fd = static_cast<int>(syscall(__NR_memfd_create, "jit-cache", 0u));
 #endif
+    if (fd < 0) {
+        // Fallback: pipe-based approach
+        int pipefd[2];
+        if (pipe(pipefd) < 0) return -1;
+        write(pipefd[1], content.c_str(), content.size())    ;
+        write(pipefd[1], "\n", 1);
+        close(pipefd[1]);
+        return pipefd[0];
+    }
 
-#if __ANDROID_API__ >= 26
+    // memfd path
     if (fd >= 0) {
         std::string line = content + "\n";
         write(fd, line.c_str(), line.size());
         lseek(fd, 0, SEEK_SET);
     }
     return fd;
-#endif
 }
 
 static int proxy_open(const char *pathname, int flags, ...) {
@@ -227,9 +228,9 @@ static int proxy_open(const char *pathname, int flags, ...) {
 
     // Forward to original with correct mode_t
     if (flags & (O_CREAT | O_TMPFILE)) {
-        return SHADOWHOOK_CALL_PREV(proxy_open, orig_open_t, pathname, flags, mode);
+        return orig_open(pathname, flags, mode);
     }
-    return SHADOWHOOK_CALL_PREV(proxy_open, orig_open_t, pathname, flags);
+    return orig_open(pathname, flags);
 }
 
 // ============================================================================
@@ -277,7 +278,7 @@ void install_hooks(const SpoofConfig &config) {
     g_config = config;
     build_prop_map(g_config);
 
-    int init_ret = shadowhook_init(SHADOWHOOK_MODE_UNIQUE);
+    int init_ret = shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false);
     if (init_ret != 0) {
         LOGE("ShadowHook init failed: %d", init_ret);
         return;
