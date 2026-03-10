@@ -49,6 +49,7 @@ public:
     }
 
     void postAppSpecialize(const zygisk::AppSpecializeArgs *args) override {
+        (void)args;
         if (!should_hook_) return;
 
         // All hook installation happens here, AFTER the process is forked
