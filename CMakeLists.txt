@@ -7,12 +7,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ============================================================================
 # Security Hardening Flags
 # ============================================================================
-set(HARDENED_C_FLAGS   "-fstack-protector-strong -D_FORTIFY_SOURCE=2 -fvisibility=hidden -ffunction-sections -fdata-sections")
-set(HARDENED_CXX_FLAGS "${HARDENED_C_FLAGS}")
-set(HARDENED_LD_FLAGS  "-Wl,-z,relro,-z,now -Wl,--gc-sections -Wl,--exclude-libs,ALL -s")
+set(HARDENED_C_FLAGS "-fstack-protector-strong" "-D_FORTIFY_SOURCE=2" "-fvisibility=hidden" "-ffunction-sections" "-fdata-sections")
 
-set(CMAKE_C_FLAGS_RELEASE   "${CMAKE_C_FLAGS_RELEASE}   ${HARDENED_C_FLAGS}")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${HARDENED_CXX_FLAGS}")
+add_compile_options(${HARDENED_C_FLAGS})
+
+set(HARDENED_LD_FLAGS "-Wl,-z,relro" "-Wl,-z,now" "-Wl,--gc-sections" "-Wl,--exclude-libs,ALL" "-s")
 
 # LTO for smaller binary
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
