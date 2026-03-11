@@ -288,60 +288,45 @@ async function fetchInstalledApps() {
         return '';
     }
 
-    const TMP = '/data/local/tmp/.spoofer_pkglist';
-    const CHUNK = 100; // lines per read — stays well within exec buffer limits
+    const TMP_RAW = '/data/local/tmp/.spoofer_raw';
+    const TMP_CLEAN = '/data/local/tmp/.spoofer_pkgs';
+    const CHUNK = 30;
 
-    // Step 1: Write stripped package list to temp file (no "package:" prefix = smaller)
-    const writeCommands = [
-        `pm list packages -3 2>/dev/null | cut -d: -f2 | sort > ${TMP}`,
-        `/system/bin/pm list packages -3 2>/dev/null | cut -d: -f2 | sort > ${TMP}`,
-        `cmd package list packages -3 2>/dev/null | cut -d: -f2 | sort > ${TMP}`,
-    ];
+    try {
+        // Step 1: Write raw pm output to file (NO PIPES - just redirect)
+        let written = false;
+        for (const pm of ['pm', '/system/bin/pm']) {
+            await execShell(`${pm} list packages -3 > ${TMP_RAW} 2>/dev/null`);
+            const chk = await execShell(`wc -l ${TMP_RAW}`);
+            if (parseInt(getStdout(chk)) > 0) { written = true; break; }
+        }
+        if (!written) { loading.style.display = 'none'; renderDropdownItems(); return; }
 
-    let fileWritten = false;
-    for (const cmd of writeCommands) {
-        try {
-            await execShell(cmd);
-            const check = await execShell(`wc -l < ${TMP}`);
-            const count = parseInt(getStdout(check)) || 0;
-            if (count > 0) { fileWritten = true; break; }
-        } catch(e) { /* try next */ }
-    }
+        // Step 2: Strip "package:" prefix (separate command, NO PIPES)
+        await execShell(`sed 's/^package://g' ${TMP_RAW} > ${TMP_CLEAN}`);
 
-    // Step 2: Read in chunks to avoid exec API buffer truncation
-    if (fileWritten) {
-        const countR = await execShell(`wc -l < ${TMP}`);
+        // Step 3: Count lines
+        const countR = await execShell(`wc -l ${TMP_CLEAN}`);
         const total = parseInt(getStdout(countR)) || 0;
-        let allApps = [];
 
+        // Step 4: Read in small chunks (30 lines each — well within buffer)
+        let allApps = [];
         for (let start = 1; start <= total; start += CHUNK) {
             const end = start + CHUNK - 1;
-            try {
-                const r = await execShell(`sed -n '${start},${end}p' ${TMP}`);
-                const lines = getStdout(r).split('\n')
-                    .map(l => l.trim())
-                    .filter(p => p.length > 0 && p.includes('.'));
-                allApps = allApps.concat(lines);
-            } catch(e) { break; }
+            const r = await execShell(`sed -n '${start},${end}p' ${TMP_CLEAN}`);
+            const lines = getStdout(r).split('\n')
+                .map(l => l.trim())
+                .filter(p => p.length > 0 && p.includes('.'));
+            allApps = allApps.concat(lines);
         }
-        installedApps = allApps;
+        installedApps = allApps.sort();
+
+    } catch(e) {
+        console.error('fetchInstalledApps error', e);
     }
 
-    // Fallback: direct exec
-    if (installedApps.length === 0) {
-        try {
-            const r = await execShell('pm list packages -3');
-            const stdout = getStdout(r);
-            if (stdout && stdout.includes('package:')) {
-                installedApps = stdout.split('\n')
-                    .map(l => l.replace(/^package:/i, '').trim())
-                    .filter(p => p.length > 0 && p.includes('.'))
-                    .sort();
-            }
-        } catch(e) { /* fallback failed */ }
-    }
-
-    execShell(`rm -f ${TMP}`).catch(() => {});
+    // Cleanup
+    execShell(`rm -f ${TMP_RAW} ${TMP_CLEAN}`).catch(() => {});
     loading.style.display = 'none';
 
     if (installedApps.length === 0) {
