@@ -512,10 +512,18 @@ async function wipeAllTargets() {
 
 async function burnAndSpoof() {
     const btn = document.getElementById('btnBurnSpoof'); btn.classList.add('loading');
+    
+    // 1. Kill all target apps before starting
+    if (config.target_apps?.length) {
+        for (const app of config.target_apps) {
+            await execShell(`am force-stop ${app}`);
+        }
+    }
+
     randomizeAll(); collectFormValues(); config.enabled = true;
     await writeConfigFile(config);
     
-    // Wipe and patch SSAID for each target app
+    // 2. Wipe and patch SSAID for each target app
     if (config.target_apps?.length) {
         await execShell(`sh ${WIPE_SCRIPT} ${config.target_apps.join(' ')}`);
 
@@ -523,9 +531,19 @@ async function burnAndSpoof() {
         if (config.spoof_values.android_id) {
             const ssaid = config.spoof_values.android_id;
             const xmlPath = '/data/system/users/0/settings_ssaid.xml';
-            // Replace all value="<16-hex>" entries in settings_ssaid.xml
-            await execShell(`sed -i 's/value="[0-9a-f]\\{16\\}"/value="${ssaid}"/g' ${xmlPath}`);
+            // Use case-insensitive sed for robust patching
+            await execShell(`sed -i 's/value="[0-9a-fA-F]\\{16\\}"/value="${ssaid}"/g' ${xmlPath}`);
             await execShell(`chmod 600 ${xmlPath}`);
+            
+            // 3. Force system to reload the new SSAID by killing SettingsProvider
+            await execShell("killall -9 com.android.providers.settings 2>/dev/null");
+        }
+    }
+    
+    // 4. Final kill of target apps to ensure they start fresh with the new identity
+    if (config.target_apps?.length) {
+        for (const app of config.target_apps) {
+            await execShell(`am force-stop ${app}`);
         }
     }
     

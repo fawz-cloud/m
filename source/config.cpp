@@ -142,6 +142,12 @@ SpoofConfig load_config() {
 bool is_target_app(const SpoofConfig &config, const std::string &package_name) {
     for (const auto &app : config.target_apps) {
         if (app == package_name) return true;
+        // Match sub-processes: "com.package.name:remote" matches "com.package.name"
+        if (package_name.size() > app.size() &&
+            package_name.compare(0, app.size(), app) == 0 &&
+            package_name[app.size()] == ':') {
+            return true;
+        }
     }
     return false;
 }
