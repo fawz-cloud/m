@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/system_properties.h>
 #include <net/if.h>
 #include <android/log.h>
