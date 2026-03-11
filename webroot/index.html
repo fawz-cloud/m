@@ -73,11 +73,29 @@
                 <i data-lucide="layout-grid" class="icon-section"></i>
                 <h2 class="section-title">Target Apps</h2>
             </div>
-            <div class="input-group">
-                <input type="text" id="newAppInput" placeholder="com.shopee.id" class="input" />
-                <button class="btn btn-small btn-primary" onclick="addTargetApp()">
-                    <i data-lucide="plus" class="icon-inline"></i> Add
-                </button>
+            <div class="dropdown-container" id="appDropdownContainer">
+                <div class="input-group">
+                    <div class="dropdown-wrapper">
+                        <div class="dropdown-input" id="dropdownInput" onclick="toggleDropdown()">
+                            <i data-lucide="search" class="dropdown-search-icon"></i>
+                            <input type="text" id="appSearchInput" placeholder="Search installed apps..." class="dropdown-search" oninput="filterApps()" onclick="event.stopPropagation(); openDropdown()" />
+                            <i data-lucide="chevron-down" class="dropdown-chevron" id="dropdownChevron"></i>
+                        </div>
+                        <div class="dropdown-menu" id="dropdownMenu">
+                            <div class="dropdown-loading" id="dropdownLoading">
+                                <i data-lucide="loader" class="spin-icon"></i>
+                                <span>Loading apps...</span>
+                            </div>
+                            <div id="dropdownItems"></div>
+                            <div class="dropdown-empty" id="dropdownEmpty" style="display:none">
+                                No apps found
+                            </div>
+                        </div>
+                    </div>
+                    <button class="btn btn-small btn-primary" onclick="addSelectedApp()">
+                        <i data-lucide="plus" class="icon-inline"></i> Add
+                    </button>
+                </div>
             </div>
             <div class="app-list" id="appList"></div>
         </section>

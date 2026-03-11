@@ -190,6 +190,9 @@ const OPERATORS = [
 // State
 // ============================================================================
 let config = { target_apps: [], spoof_values: {}, custom_wipe_dirs: [], enabled: true };
+let installedApps = [];
+let selectedApp = '';
+let dropdownOpen = false;
 
 // ============================================================================
 // Randomizers
@@ -271,14 +274,89 @@ function updateStatus() {
 // ============================================================================
 // App / Dir Management
 // ============================================================================
-function addTargetApp() {
-    const input = document.getElementById('newAppInput');
-    const pkg = input.value.trim();
-    if (!pkg || !pkg.includes('.')) { showToast('Invalid package name','error'); return; }
-    if (config.target_apps.includes(pkg)) { showToast('Already added','error'); return; }
-    config.target_apps.push(pkg); input.value = '';
-    renderAppList(); updateStatus(); showToast(`Added ${pkg}`,'success');
+async function fetchInstalledApps() {
+    const loading = document.getElementById('dropdownLoading');
+    const itemsContainer = document.getElementById('dropdownItems');
+    loading.style.display = 'flex';
+    itemsContainer.innerHTML = '';
+    try {
+        const r = await execShell('pm list packages -3 2>/dev/null || pm list packages 2>/dev/null');
+        if (r.errno === 0 && r.stdout) {
+            installedApps = r.stdout.split('\n')
+                .map(l => l.replace('package:', '').trim())
+                .filter(p => p && p.includes('.'))
+                .sort();
+        }
+    } catch(e) { console.error('Failed to fetch apps', e); }
+    loading.style.display = 'none';
+    renderDropdownItems();
 }
+
+function renderDropdownItems(filter = '') {
+    const itemsContainer = document.getElementById('dropdownItems');
+    const emptyEl = document.getElementById('dropdownEmpty');
+    itemsContainer.innerHTML = '';
+    const q = filter.toLowerCase();
+    const filtered = q ? installedApps.filter(a => a.toLowerCase().includes(q)) : installedApps;
+    const already = config.target_apps || [];
+    const available = filtered.filter(a => !already.includes(a));
+    if (available.length === 0) {
+        emptyEl.style.display = 'block';
+    } else {
+        emptyEl.style.display = 'none';
+        available.forEach(pkg => {
+            const item = document.createElement('div');
+            item.className = 'dropdown-item' + (pkg === selectedApp ? ' selected' : '');
+            item.textContent = pkg;
+            item.onclick = (e) => { e.stopPropagation(); selectApp(pkg); };
+            itemsContainer.appendChild(item);
+        });
+    }
+}
+
+function selectApp(pkg) {
+    selectedApp = pkg;
+    document.getElementById('appSearchInput').value = pkg;
+    closeDropdown();
+}
+
+function toggleDropdown() {
+    if (dropdownOpen) closeDropdown(); else openDropdown();
+}
+
+function openDropdown() {
+    if (dropdownOpen) return;
+    dropdownOpen = true;
+    document.getElementById('dropdownMenu').classList.add('open');
+    document.getElementById('dropdownChevron').style.transform = 'rotate(180deg)';
+    if (installedApps.length === 0) fetchInstalledApps();
+    else renderDropdownItems(document.getElementById('appSearchInput').value);
+}
+
+function closeDropdown() {
+    dropdownOpen = false;
+    document.getElementById('dropdownMenu').classList.remove('open');
+    document.getElementById('dropdownChevron').style.transform = '';
+}
+
+function filterApps() {
+    const q = document.getElementById('appSearchInput').value;
+    selectedApp = '';
+    if (!dropdownOpen) openDropdown();
+    renderDropdownItems(q);
+}
+
+function addSelectedApp() {
+    const input = document.getElementById('appSearchInput');
+    const pkg = (selectedApp || input.value.trim());
+    if (!pkg || !pkg.includes('.')) { showToast('Select an app first','error'); return; }
+    if (config.target_apps.includes(pkg)) { showToast('Already added','error'); return; }
+    config.target_apps.push(pkg);
+    selectedApp = ''; input.value = '';
+    renderAppList(); updateStatus(); renderDropdownItems();
+    showToast(`Added ${pkg}`,'success');
+}
+
 function removeTargetApp(i) {
     const r = config.target_apps.splice(i,1)[0];
     renderAppList(); updateStatus(); showToast(`Removed ${r}`,'success');
@@ -381,7 +459,12 @@ function showToast(msg, type = 'success') {
 // Init
 // ============================================================================
 document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('newAppInput').addEventListener('keydown', e => { if (e.key === 'Enter') addTargetApp(); });
     document.getElementById('newWipeDirInput').addEventListener('keydown', e => { if (e.key === 'Enter') addWipeDir(); });
+    document.getElementById('appSearchInput').addEventListener('keydown', e => { if (e.key === 'Enter') addSelectedApp(); });
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+        const container = document.getElementById('appDropdownContainer');
+        if (container && !container.contains(e.target)) closeDropdown();
+    });
 });
 loadConfig();
