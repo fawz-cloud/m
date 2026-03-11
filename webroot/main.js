@@ -289,41 +289,51 @@ async function fetchInstalledApps() {
         return '';
     }
 
-    // Try multiple command variations — different root managers handle these differently
-    const commands = [
-        'pm list packages -3',
-        'pm list packages',
-        '/system/bin/pm list packages -3',
-        'cmd package list packages -3',
+    const TMP = '/data/local/tmp/.spoofer_pkglist';
+
+    // Strategy: write to temp file then read back (avoids stdout buffer truncation)
+    // -3 flag = third-party only (excludes system apps)
+    const writeCommands = [
+        `pm list packages -3 > ${TMP} 2>/dev/null`,
+        `/system/bin/pm list packages -3 > ${TMP} 2>/dev/null`,
+        `cmd package list packages -3 > ${TMP} 2>/dev/null`,
     ];
 
-    let output = '';
-    for (const cmd of commands) {
+    // Try writing package list to temp file
+    for (const cmd of writeCommands) {
         try {
-            const r = await execShell(cmd);
+            await execShell(cmd);
+            const r = await execShell(`cat ${TMP}`);
             const stdout = getStdout(r);
             if (stdout && stdout.includes('package:')) {
-                output = stdout;
+                installedApps = stdout.split('\n')
+                    .map(l => l.replace(/^package:/i, '').trim())
+                    .filter(p => p.length > 0 && p.includes('.'))
+                    .sort();
                 break;
             }
-            // Some managers return errno !== 0 but still have output
-            if (r && r.errno !== 0 && stdout && stdout.includes('package:')) {
-                output = stdout;
-                break;
-            }
-        } catch(e) { /* try next command */ }
+        } catch(e) { /* try next */ }
     }
 
-    if (output) {
-        installedApps = output.split('\n')
-            .map(l => l.replace(/^package:/i, '').trim())
-            .filter(p => p.length > 0 && p.includes('.'))
-            .sort();
+    // Fallback: direct exec (in case temp file approach fails)
+    if (installedApps.length === 0) {
+        try {
+            const r = await execShell('pm list packages -3');
+            const stdout = getStdout(r);
+            if (stdout && stdout.includes('package:')) {
+                installedApps = stdout.split('\n')
+                    .map(l => l.replace(/^package:/i, '').trim())
+                    .filter(p => p.length > 0 && p.includes('.'))
+                    .sort();
+            }
+        } catch(e) { /* fallback failed */ }
     }
+
+    // Cleanup temp file
+    execShell(`rm -f ${TMP}`).catch(() => {});
 
     loading.style.display = 'none';
 
-    // If still empty, show manual input hint
     if (installedApps.length === 0) {
         document.getElementById('appSearchInput').placeholder = 'Type package name manually (e.g. com.app.name)';
     }
