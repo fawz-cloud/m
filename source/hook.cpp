@@ -766,14 +766,8 @@ void install_jni_hooks(JNIEnv *env, const SpoofConfig &config) {
     LOGI("All JNI hooks installed");
 }
 
-// ============================================================================
-// [H6] Native hook for MediaDrm — intercept getPropertyString
-// Hook target: libmedia_jni.so symbol for getPropertyStringNative
-// Fallback: hook DrmHal::getPropertyString in libmediadrmserver if available
-// ============================================================================
-typedef void *(*orig_drm_get_prop_t)(void *thiz, void *name);
-static orig_drm_get_prop_t orig_drm_get_prop = nullptr;
-static void *stub_drm_prop = nullptr;
+// [H6] MediaDrm native hook — reserved for future implementation
+// when libmedia_jni.so symbol names are resolved per-device.
 
 // ============================================================================
 // Public: install_hooks  (native hooks via ShadowHook)

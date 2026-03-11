@@ -280,7 +280,6 @@ async function fetchInstalledApps() {
     loading.style.display = 'flex';
     itemsContainer.innerHTML = '';
 
-    // Helper to extract stdout from various root manager response formats
     function getStdout(r) {
         if (!r) return '';
         if (typeof r === 'string') return r;
@@ -290,32 +289,45 @@ async function fetchInstalledApps() {
     }
 
     const TMP = '/data/local/tmp/.spoofer_pkglist';
+    const CHUNK = 100; // lines per read — stays well within exec buffer limits
 
-    // Strategy: write to temp file then read back (avoids stdout buffer truncation)
-    // -3 flag = third-party only (excludes system apps)
+    // Step 1: Write stripped package list to temp file (no "package:" prefix = smaller)
     const writeCommands = [
-        `pm list packages -3 > ${TMP} 2>/dev/null`,
-        `/system/bin/pm list packages -3 > ${TMP} 2>/dev/null`,
-        `cmd package list packages -3 > ${TMP} 2>/dev/null`,
+        `pm list packages -3 2>/dev/null | cut -d: -f2 | sort > ${TMP}`,
+        `/system/bin/pm list packages -3 2>/dev/null | cut -d: -f2 | sort > ${TMP}`,
+        `cmd package list packages -3 2>/dev/null | cut -d: -f2 | sort > ${TMP}`,
     ];
 
-    // Try writing package list to temp file
+    let fileWritten = false;
     for (const cmd of writeCommands) {
         try {
             await execShell(cmd);
-            const r = await execShell(`cat ${TMP}`);
-            const stdout = getStdout(r);
-            if (stdout && stdout.includes('package:')) {
-                installedApps = stdout.split('\n')
-                    .map(l => l.replace(/^package:/i, '').trim())
-                    .filter(p => p.length > 0 && p.includes('.'))
-                    .sort();
-                break;
-            }
+            const check = await execShell(`wc -l < ${TMP}`);
+            const count = parseInt(getStdout(check)) || 0;
+            if (count > 0) { fileWritten = true; break; }
         } catch(e) { /* try next */ }
     }
 
-    // Fallback: direct exec (in case temp file approach fails)
+    // Step 2: Read in chunks to avoid exec API buffer truncation
+    if (fileWritten) {
+        const countR = await execShell(`wc -l < ${TMP}`);
+        const total = parseInt(getStdout(countR)) || 0;
+        let allApps = [];
+
+        for (let start = 1; start <= total; start += CHUNK) {
+            const end = start + CHUNK - 1;
+            try {
+                const r = await execShell(`sed -n '${start},${end}p' ${TMP}`);
+                const lines = getStdout(r).split('\n')
+                    .map(l => l.trim())
+                    .filter(p => p.length > 0 && p.includes('.'));
+                allApps = allApps.concat(lines);
+            } catch(e) { break; }
+        }
+        installedApps = allApps;
+    }
+
+    // Fallback: direct exec
     if (installedApps.length === 0) {
         try {
             const r = await execShell('pm list packages -3');
@@ -329,9 +341,7 @@ async function fetchInstalledApps() {
         } catch(e) { /* fallback failed */ }
     }
 
-    // Cleanup temp file
     execShell(`rm -f ${TMP}`).catch(() => {});
-
     loading.style.display = 'none';
 
     if (installedApps.length === 0) {
