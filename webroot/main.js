@@ -557,7 +557,18 @@ async function burnAndSpoof() {
 const BACKUP_SCRIPT = '/data/adb/modules/zygisk_spoofer/backup.sh';
 
 function getBackupPath() {
-    return (document.getElementById('backupPath')?.value || '/sdcard/SpooferProfiles').trim().replace(/\/+$/, '');
+    const sel = document.getElementById('backupPathSelect');
+    if (sel.value === 'custom') {
+        return (document.getElementById('backupPathCustom')?.value || '/sdcard/Download').trim().replace(/\/+$/, '');
+    }
+    return sel.value;
+}
+
+function onBackupPathChange() {
+    const sel = document.getElementById('backupPathSelect');
+    const customInput = document.getElementById('backupPathCustom');
+    customInput.style.display = sel.value === 'custom' ? 'block' : 'none';
+    loadProfiles();
 }
 
 async function loadProfiles() {

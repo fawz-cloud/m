@@ -109,8 +109,16 @@
             <p class="hint">Backup & restore app data + device identity as profiles</p>
 
             <div class="field" style="margin-bottom:12px">
-                <label>Backup Path</label>
-                <input type="text" id="backupPath" class="input mono" value="/sdcard/SpooferProfiles" placeholder="/sdcard/SpooferProfiles" />
+                <label>Backup Location</label>
+                <select id="backupPathSelect" class="input" onchange="onBackupPathChange()">
+                    <option value="/sdcard/Download">Download</option>
+                    <option value="/sdcard/Documents">Documents</option>
+                    <option value="/sdcard/SpooferProfiles">SpooferProfiles</option>
+                    <option value="/sdcard/DCIM/.backup">DCIM/.backup (hidden)</option>
+                    <option value="/data/local/tmp/spoofer_profiles">Internal (/data/local/tmp)</option>
+                    <option value="custom">Custom path...</option>
+                </select>
+                <input type="text" id="backupPathCustom" class="input mono" style="display:none;margin-top:8px" placeholder="/sdcard/your/custom/path" />
             </div>
 
             <div class="input-group">

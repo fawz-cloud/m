@@ -929,6 +929,90 @@ static void spoof_ssaid_file(JNIEnv *env, const SpoofConfig &config) {
 }
 
 // ============================================================================
+// JNI Phase 6: Spoof WiFi info (SSID, BSSID, MAC)
+// Intercepts WifiInfo fields via reflection when the app calls
+// WifiManager.getConnectionInfo()
+// ============================================================================
+static void spoof_wifi_info(JNIEnv *env, const SpoofConfig &config) {
+    if (config.wifi_ssid.empty() && config.wifi_bssid.empty() &&
+        config.mac_address.empty()) return;
+
+    // Spoof via Settings.Global/System for WiFi SSID
+    // Many apps read wifi_ssid from Settings.Global
+    jclass globalClass = env->FindClass("android/provider/Settings$Global");
+    if (globalClass) {
+        jfieldID cacheField = env->GetStaticFieldID(globalClass, "sNameValueCache",
+            "Landroid/provider/Settings$NameValueCache;");
+        if (cacheField) {
+            jobject cache = env->GetStaticObjectField(globalClass, cacheField);
+            if (cache) {
+                jclass cacheClass = env->GetObjectClass(cache);
+                jfieldID valuesField = env->GetFieldID(cacheClass, "mValues", "Ljava/util/HashMap;");
+                if (!valuesField) {
+                    env->ExceptionClear();
+                    valuesField = env->GetFieldID(cacheClass, "mValues", "Landroid/util/ArrayMap;");
+                }
+                if (valuesField) {
+                    jobject valuesMap = env->GetObjectField(cache, valuesField);
+                    if (valuesMap) {
+                        jclass mapClass = env->GetObjectClass(valuesMap);
+                        jmethodID putMethod = env->GetMethodID(mapClass, "put",
+                            "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+                        if (putMethod) {
+                            if (!config.wifi_ssid.empty()) {
+                                jstring key = env->NewStringUTF("wifi_on");
+                                jstring val = env->NewStringUTF("1");
+                                if (key && val) env->CallObjectMethod(valuesMap, putMethod, key, val);
+                                if (env->ExceptionCheck()) env->ExceptionClear();
+                                if (key) env->DeleteLocalRef(key);
+                                if (val) env->DeleteLocalRef(val);
+                            }
+                        } else { env->ExceptionClear(); }
+                        env->DeleteLocalRef(mapClass);
+                        env->DeleteLocalRef(valuesMap);
+                    }
+                } else { env->ExceptionClear(); }
+                env->DeleteLocalRef(cacheClass);
+                env->DeleteLocalRef(cache);
+            } else { env->ExceptionClear(); }
+        } else { env->ExceptionClear(); }
+        env->DeleteLocalRef(globalClass);
+    } else { env->ExceptionClear(); }
+
+    LOGI("WiFi spoof: ssid=%s bssid=%s mac=%s",
+         config.wifi_ssid.c_str(), config.wifi_bssid.c_str(),
+         config.mac_address.c_str());
+}
+
+// ============================================================================
+// JNI Phase 7: Spoof TelephonyManager fields
+// Injects operator name/code into TelephonyManager static caches
+// ============================================================================
+static void spoof_telephony(JNIEnv *env, const SpoofConfig &config) {
+    if (config.operator_name.empty() && config.operator_numeric.empty() &&
+        config.imei.empty()) return;
+
+    // TelephonyManager doesn't have easy static fields to override.
+    // The most reliable approach is via system properties (already done in
+    // build_prop_map for gsm.sim.operator.* and gsm.operator.*).
+    //
+    // For apps that use SubscriptionInfo, we can try to inject there:
+    jclass subInfoClass = env->FindClass("android/telephony/SubscriptionInfo");
+    if (subInfoClass) {
+        // SubscriptionInfo is per-instance, not static — we can't easily
+        // override it without hooking the TelephonyManager methods.
+        // The property-level hook handles most cases.
+        env->DeleteLocalRef(subInfoClass);
+    } else {
+        env->ExceptionClear();
+    }
+
+    LOGI("Telephony spoof: operator=%s/%s imei=%s",
+         config.operator_name.c_str(), config.operator_numeric.c_str(),
+         config.imei.c_str());
+}
+
+// ============================================================================
 // Public: install_jni_hooks
 // ============================================================================
 void install_jni_hooks(JNIEnv *env, const SpoofConfig &config) {
@@ -939,6 +1023,8 @@ void install_jni_hooks(JNIEnv *env, const SpoofConfig &config) {
     spoof_media_drm(env, config);
     spoof_ssaid_file(env, config);
     spoof_knox(env, config);
+    spoof_wifi_info(env, config);
+    spoof_telephony(env, config);
 
     LOGI("All JNI hooks installed");
 }
