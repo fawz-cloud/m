@@ -288,45 +288,65 @@ async function fetchInstalledApps() {
         return '';
     }
 
-    const TMP_RAW = '/data/local/tmp/.spoofer_raw';
-    const TMP_CLEAN = '/data/local/tmp/.spoofer_pkgs';
-    const CHUNK = 30;
+    // System package prefixes to filter out
+    const SYSTEM_PREFIXES = [
+        'android', 'com.android.', 'com.google.android.', 'com.qualcomm.',
+        'com.qti.', 'com.samsung.android.', 'com.sec.', 'com.mediatek.',
+        'com.miui.', 'org.codeaurora.', 'vendor.', 'com.huawei.android.',
+        'com.oppo.', 'com.coloros.', 'com.oplus.', 'com.bbk.', 'com.vivo.',
+        'com.realme.', 'com.oneplus.', 'com.asus.', 'com.motorola.',
+        'com.sonymobile.', 'com.lge.', 'com.transsion.', 'com.itel.',
+    ];
+    function isSystemPkg(pkg) {
+        for (const pfx of SYSTEM_PREFIXES) {
+            if (pkg === pfx || pkg.startsWith(pfx)) return true;
+        }
+        return false;
+    }
+
+    const WEBROOT_LIST = '/data/adb/modules/zygisk_spoofer/webroot/applist.txt';
 
     try {
-        // Step 1: Write raw pm output to file (NO PIPES - just redirect)
-        let written = false;
-        for (const pm of ['pm', '/system/bin/pm']) {
-            await execShell(`${pm} list packages -3 > ${TMP_RAW} 2>/dev/null`);
-            const chk = await execShell(`wc -l ${TMP_RAW}`);
-            if (parseInt(getStdout(chk)) > 0) { written = true; break; }
-        }
-        if (!written) { loading.style.display = 'none'; renderDropdownItems(); return; }
+        // === PRIMARY: ls /data/data/ → webroot file → HTTP fetch ===
+        // ls is instant (filesystem only, no IPC), and fetch bypasses exec buffer limits
+        await execShell(`ls -1 /data/data/ > ${WEBROOT_LIST}`);
 
-        // Step 2: Strip "package:" prefix (separate command, NO PIPES)
-        await execShell(`sed 's/^package://g' ${TMP_RAW} > ${TMP_CLEAN}`);
+        let text = '';
+        try {
+            const resp = await fetch('applist.txt?_=' + Date.now());
+            if (resp.ok) text = await resp.text();
+        } catch(e) { /* fetch failed, will try fallback */ }
 
-        // Step 3: Count lines
-        const countR = await execShell(`wc -l ${TMP_CLEAN}`);
-        const total = parseInt(getStdout(countR)) || 0;
-
-        // Step 4: Read in small chunks (30 lines each — well within buffer)
-        let allApps = [];
-        for (let start = 1; start <= total; start += CHUNK) {
-            const end = start + CHUNK - 1;
-            const r = await execShell(`sed -n '${start},${end}p' ${TMP_CLEAN}`);
-            const lines = getStdout(r).split('\n')
+        if (text.length > 10) {
+            installedApps = text.split('\n')
                 .map(l => l.trim())
-                .filter(p => p.length > 0 && p.includes('.'));
-            allApps = allApps.concat(lines);
+                .filter(p => p.length > 0 && p.includes('.') && !isSystemPkg(p))
+                .sort();
         }
-        installedApps = allApps.sort();
 
+        // === FALLBACK: if fetch didn't work, read via exec in tiny chunks ===
+        if (installedApps.length === 0) {
+            const TMP = '/data/local/tmp/.spoofer_pkgs';
+            await execShell(`ls -1 /data/data/ > ${TMP}`);
+            const countR = await execShell(`wc -l ${TMP}`);
+            const total = parseInt(getStdout(countR)) || 0;
+            let allApps = [];
+            for (let s = 1; s <= total; s += 10) {
+                const r = await execShell(`sed -n '${s},${s + 9}p' ${TMP}`);
+                const lines = getStdout(r).split('\n')
+                    .map(l => l.trim())
+                    .filter(p => p.length > 0 && p.includes('.') && !isSystemPkg(p));
+                allApps = allApps.concat(lines);
+            }
+            installedApps = allApps.sort();
+            execShell(`rm -f ${TMP}`).catch(() => {});
+        }
     } catch(e) {
         console.error('fetchInstalledApps error', e);
     }
 
-    // Cleanup
-    execShell(`rm -f ${TMP_RAW} ${TMP_CLEAN}`).catch(() => {});
+    // Cleanup webroot file
+    execShell(`rm -f ${WEBROOT_LIST}`).catch(() => {});
     loading.style.display = 'none';
 
     if (installedApps.length === 0) {
