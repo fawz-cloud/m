@@ -465,18 +465,7 @@ static void set_static_string_field(JNIEnv *env, jclass clazz,
     }
 }
 
-// ---- Helper: Call a static method that returns String ----
-static jstring call_static_string_method(JNIEnv *env, jclass clazz,
-                                          const char *name, const char *sig, ...) {
-    jmethodID mid = env->GetStaticMethodID(clazz, name, sig);
-    if (!mid) { env->ExceptionClear(); return nullptr; }
-    va_list args;
-    va_start(args, sig);
-    jstring ret = (jstring)env->CallStaticObjectMethodV(clazz, mid, args);
-    va_end(args);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
-    return ret;
-}
+// ---- Helper: Set a static String field on a Java class ----
 
 // ============================================================================
 // JNI Phase 1: Override android.os.Build fields
@@ -621,6 +610,7 @@ static void spoof_system_properties_class(JNIEnv *env, const SpoofConfig &config
 // the ITelephony binder proxy's cached results
 // ============================================================================
 static void spoof_telephony(JNIEnv *env, const SpoofConfig &config) {
+    (void)env;
     if (config.imei.empty() && config.meid.empty() &&
         config.operator_name.empty() && config.operator_numeric.empty()) return;
 
