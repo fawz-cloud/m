@@ -511,7 +511,28 @@ async function burnAndSpoof() {
     const btn = document.getElementById('btnBurnSpoof'); btn.classList.add('loading');
     randomizeAll(); collectFormValues(); config.enabled = true;
     await writeConfigFile(config);
-    if (config.target_apps?.length) await execShell(`sh ${WIPE_SCRIPT} ${config.target_apps.join(' ')}`);
+    
+    // Wipe and patch SSAID for each target app
+    if (config.target_apps?.length) {
+        await execShell(`sh ${WIPE_SCRIPT} ${config.target_apps.join(' ')}`);
+
+        // Root-level SSAID patch (mimics deviceidchanger)
+        if (config.spoof_values.android_id) {
+            const ssaid = config.spoof_values.android_id;
+            const xmlPath = '/data/system/users/0/settings_ssaid.xml';
+            for (const app of config.target_apps) {
+                // Read current ssaid for this app to find what to replace
+                const check = await execShell(`grep 'package="${app}"' ${xmlPath}`);
+                const match = check.stdout?.match(/value="([^"]+)"/);
+                if (match && match[1] && match[1] !== ssaid) {
+                    // Replace using sed
+                    await execShell(`sed -i 's/value="${match[1]}"/value="${ssaid}"/' ${xmlPath}`);
+                }
+            }
+            await execShell(`chmod 600 ${xmlPath}`);
+        }
+    }
+    
     btn.classList.remove('loading');
     showToast('Identity burned! Open target apps.', 'success');
 }
