@@ -435,6 +435,71 @@ static bool is_maps_path(const char *pathname) {
 }
 
 // ============================================================================
+// SSAID file interception — replace all SSAID values in settings_ssaid.xml
+// on-the-fly when any process reads the file. This ensures apps that read
+// SSAID via the XML file (instead of Settings.Secure API) get spoofed values.
+// ============================================================================
+static thread_local bool g_ssaid_filtering = false;
+
+static bool is_ssaid_path(const char *pathname) {
+    if (!pathname) return false;
+    return strstr(pathname, "settings_ssaid.xml") != nullptr;
+}
+
+static std::string generate_spoofed_ssaid() {
+    if (g_ssaid_filtering) return "";
+    g_ssaid_filtering = true;
+
+    const char *ssaid_path = "/data/system/users/0/settings_ssaid.xml";
+    FILE *fp = orig_fopen ? orig_fopen(ssaid_path, "r")
+                          : fopen(ssaid_path, "r");
+    if (!fp) { g_ssaid_filtering = false; return ""; }
+
+    std::string content;
+    content.reserve(4096);
+    char buf[512];
+    while (fgets(buf, sizeof(buf), fp)) {
+        content.append(buf);
+    }
+    fclose(fp);
+
+    if (content.empty()) { g_ssaid_filtering = false; return ""; }
+
+    // Replace all value="<16-hex-chars>" occurrences with our spoofed android_id
+    // SSAID values are always 16 hex characters
+    const std::string &spoofed = g_config.android_id;
+    if (spoofed.size() != 16) { g_ssaid_filtering = false; return content; }
+
+    size_t pos = 0;
+    const char *val_prefix = "value=\"";
+    const size_t prefix_len = 7; // strlen("value=\"")
+    while ((pos = content.find(val_prefix, pos)) != std::string::npos) {
+        size_t val_start = pos + prefix_len;
+        size_t val_end = content.find('"', val_start);
+        if (val_end == std::string::npos) break;
+        size_t val_len = val_end - val_start;
+        // Only replace 16-char hex values (SSAID format)
+        if (val_len == 16) {
+            bool is_hex = true;
+            for (size_t i = val_start; i < val_end; i++) {
+                char ch = content[i];
+                if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))) {
+                    is_hex = false;
+                    break;
+                }
+            }
+            if (is_hex) {
+                content.replace(val_start, 16, spoofed);
+            }
+        }
+        pos = val_end + 1;
+    }
+
+    g_ssaid_filtering = false;
+    return content;
+}
+
+// ============================================================================
 // HOOK 4: open()
 // ============================================================================
 typedef int (*orig_open_t)(const char *pathname, int flags, ...);
@@ -456,6 +521,15 @@ static int proxy_open(const char *pathname, int flags, ...) {
         std::string filtered = generate_filtered_maps();
         if (!filtered.empty()) {
             int fd = make_spoof_fd(filtered);
+            if (fd >= 0) return fd;
+        }
+    }
+
+    // SSAID file interception — spoof all SSAID values on-the-fly
+    if (!g_config.android_id.empty() && is_ssaid_path(pathname)) {
+        std::string spoofed_ssaid = generate_spoofed_ssaid();
+        if (!spoofed_ssaid.empty()) {
+            int fd = make_spoof_fd(spoofed_ssaid);
             if (fd >= 0) return fd;
         }
     }
@@ -507,6 +581,15 @@ static int proxy_openat(int dirfd, const char *pathname, int flags, ...) {
             }
         }
 
+        // SSAID file interception
+        if (!g_config.android_id.empty() && is_ssaid_path(pathname)) {
+            std::string spoofed_ssaid = generate_spoofed_ssaid();
+            if (!spoofed_ssaid.empty()) {
+                int fd = make_spoof_fd(spoofed_ssaid);
+                if (fd >= 0) return fd;
+            }
+        }
+
         const std::string *spoofed = get_spoofed_file_content(pathname);
         if (spoofed) {
             int fd = make_spoof_fd(*spoofed);
@@ -536,6 +619,15 @@ static FILE *proxy_fopen(const char *pathname, const char *mode) {
             std::string filtered = generate_filtered_maps();
             if (!filtered.empty()) {
                 FILE *fp = make_spoof_file(filtered);
+                if (fp) return fp;
+            }
+        }
+
+        // SSAID file interception
+        if (!g_config.android_id.empty() && is_ssaid_path(pathname)) {
+            std::string spoofed_ssaid = generate_spoofed_ssaid();
+            if (!spoofed_ssaid.empty()) {
+                FILE *fp = make_spoof_file(spoofed_ssaid);
                 if (fp) return fp;
             }
         }
@@ -825,60 +917,15 @@ static void spoof_knox(JNIEnv *env, const SpoofConfig &config) {
 }
 
 // ============================================================================
-// JNI Phase 4: Spoof SSAID via settings_ssaid.xml file rewrite
-// Some apps read the SSAID directly from the XML file instead of using
-// Settings.Secure API. We rewrite the file to inject our spoofed android_id.
+// JNI Phase 4: SSAID spoofing via file interception
+// The actual file rewrite is handled by the native open/fopen hooks
+// (generate_spoofed_ssaid) which replace all SSAID values on-the-fly.
+// This function logs the status for debugging.
 // ============================================================================
 static void spoof_ssaid_file(JNIEnv *env, const SpoofConfig &config) {
-    (void)env; // JNIEnv not needed for file operations but kept for consistent API
+    (void)env;
     if (config.android_id.empty()) return;
-
-    const char *ssaid_paths[] = {
-        "/data/system/users/0/settings_ssaid.xml",
-        nullptr
-    };
-
-    for (int i = 0; ssaid_paths[i]; i++) {
-        FILE *fp = orig_fopen ? orig_fopen(ssaid_paths[i], "r")
-                              : fopen(ssaid_paths[i], "r");
-        if (!fp) continue;
-
-        // Read entire file
-        std::string content;
-        content.reserve(4096);
-        char buf[512];
-        while (fgets(buf, sizeof(buf), fp)) {
-            content.append(buf);
-        }
-        fclose(fp);
-
-        if (content.empty()) continue;
-
-        // Replace value="<old_ssaid>" in the android_id setting entry
-        // The XML format is: <setting ... name="android_id" value="<hex>" ... />
-        // We search for the android_id entry and replace its value attribute
-        const char *needle = "name=\"android_id\"";
-        size_t pos = content.find(needle);
-        if (pos == std::string::npos) continue;
-
-        // Find the value="..." attribute near this position
-        size_t val_start = content.find("value=\"", pos);
-        if (val_start == std::string::npos) continue;
-        val_start += 7; // skip past value="
-        size_t val_end = content.find("\"", val_start);
-        if (val_end == std::string::npos) continue;
-
-        // Replace the old value with our spoofed android_id
-        content.replace(val_start, val_end - val_start, config.android_id);
-
-        // Write back
-        fp = fopen(ssaid_paths[i], "w");
-        if (fp) {
-            fwrite(content.c_str(), 1, content.size(), fp);
-            fclose(fp);
-            LOGI("SSAID file %s rewritten with spoofed android_id", ssaid_paths[i]);
-        }
-    }
+    LOGI("SSAID: file interception active, android_id=%s", config.android_id.c_str());
 }
 
 // ============================================================================

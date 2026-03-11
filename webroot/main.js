@@ -423,9 +423,12 @@ function addSelectedApp() {
     showToast(`Added ${pkg}`,'success');
 }
 
-function removeTargetApp(i) {
+async function removeTargetApp(i) {
     const r = config.target_apps.splice(i,1)[0];
-    renderAppList(); updateStatus(); showToast(`Removed ${r}`,'success');
+    renderAppList(); updateStatus();
+    const result = await writeConfigFile(config);
+    showToast(result.errno === 0 ? `Removed ${r}` : 'Remove failed',
+              result.errno === 0 ? 'success' : 'error');
 }
 function addWipeDir() {
     const input = document.getElementById('newWipeDirInput');
@@ -516,19 +519,12 @@ async function burnAndSpoof() {
     if (config.target_apps?.length) {
         await execShell(`sh ${WIPE_SCRIPT} ${config.target_apps.join(' ')}`);
 
-        // Root-level SSAID patch (mimics deviceidchanger)
+        // Root-level SSAID patch — replace ALL ssaid values in the XML
         if (config.spoof_values.android_id) {
             const ssaid = config.spoof_values.android_id;
             const xmlPath = '/data/system/users/0/settings_ssaid.xml';
-            for (const app of config.target_apps) {
-                // Read current ssaid for this app to find what to replace
-                const check = await execShell(`grep 'package="${app}"' ${xmlPath}`);
-                const match = check.stdout?.match(/value="([^"]+)"/);
-                if (match && match[1] && match[1] !== ssaid) {
-                    // Replace using sed
-                    await execShell(`sed -i 's/value="${match[1]}"/value="${ssaid}"/' ${xmlPath}`);
-                }
-            }
+            // Replace all value="<16-hex>" entries in settings_ssaid.xml
+            await execShell(`sed -i 's/value="[0-9a-f]\\{16\\}"/value="${ssaid}"/g' ${xmlPath}`);
             await execShell(`chmod 600 ${xmlPath}`);
         }
     }
