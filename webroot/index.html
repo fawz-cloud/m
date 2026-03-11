@@ -100,6 +100,33 @@
             <div class="app-list" id="appList"></div>
         </section>
 
+        <!-- Profile Manager -->
+        <section class="section">
+            <div class="section-header">
+                <i data-lucide="archive" class="icon-section"></i>
+                <h2 class="section-title">Profile Manager</h2>
+            </div>
+            <p class="hint">Backup & restore app data + device identity as profiles</p>
+
+            <div class="field" style="margin-bottom:12px">
+                <label>Backup Path</label>
+                <input type="text" id="backupPath" class="input mono" value="/sdcard/SpooferProfiles" placeholder="/sdcard/SpooferProfiles" />
+            </div>
+
+            <div class="input-group">
+                <input type="text" id="profileNameInput" placeholder="Profile name (e.g. Akun-1)" class="input" />
+                <button class="btn btn-small btn-accent" id="btnBackup" onclick="backupProfile()">
+                    <i data-lucide="upload" class="icon-inline"></i> Backup
+                </button>
+            </div>
+
+            <div id="profileList" class="profile-list"></div>
+            <div id="profileEmpty" class="profile-empty" style="display:none">
+                <i data-lucide="inbox" style="width:20px;height:20px;color:var(--text-muted)"></i>
+                <span>No saved profiles</span>
+            </div>
+        </section>
+
         <!-- Device Identity -->
         <section class="section">
             <div class="section-header">

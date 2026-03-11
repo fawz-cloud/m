@@ -307,6 +307,77 @@ body {
     margin-bottom: 10px;
 }
 
+/* ---- Profile Manager ---- */
+.profile-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.profile-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    animation: slideIn 0.2s ease;
+}
+.profile-info {
+    flex: 1;
+    min-width: 0;
+}
+.profile-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.profile-meta {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+.profile-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+.profile-actions .btn-mini {
+    padding: 6px 10px;
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.profile-actions .btn-mini:active { transform: scale(0.95); }
+.profile-actions .btn-restore {
+    border-color: rgba(34, 197, 94, 0.3);
+    color: var(--success);
+}
+.profile-actions .btn-delete {
+    border-color: rgba(239, 68, 68, 0.2);
+    color: var(--danger);
+}
+.profile-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 24px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
 /* ---- Dropdown ---- */
 .dropdown-container { position: relative; }
 .dropdown-wrapper {

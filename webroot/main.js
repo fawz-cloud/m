@@ -552,6 +552,111 @@ async function burnAndSpoof() {
 }
 
 // ============================================================================
+// Profile Manager — Backup & Restore
+// ============================================================================
+const BACKUP_SCRIPT = '/data/adb/modules/zygisk_spoofer/backup.sh';
+
+function getBackupPath() {
+    return (document.getElementById('backupPath')?.value || '/sdcard/SpooferProfiles').trim().replace(/\/+$/, '');
+}
+
+async function loadProfiles() {
+    const backupDir = getBackupPath();
+    const r = await execShell(`sh ${BACKUP_SCRIPT} list "${backupDir}"`);
+    const listEl = document.getElementById('profileList');
+    const emptyEl = document.getElementById('profileEmpty');
+    listEl.innerHTML = '';
+
+    let profiles = [];
+    try {
+        const stdout = r.stdout || r.out || '';
+        if (stdout.trim()) profiles = JSON.parse(stdout.trim());
+    } catch(e) {}
+
+    if (profiles.length === 0) {
+        emptyEl.style.display = 'flex';
+    } else {
+        emptyEl.style.display = 'none';
+        profiles.forEach(p => {
+            const card = document.createElement('div');
+            card.className = 'profile-card';
+            const appCount = Math.floor((p.files || 0) / 2); // each app = data + sdcard tar
+            card.innerHTML = `
+                <div class="profile-info">
+                    <div class="profile-name">${p.name}</div>
+                    <div class="profile-meta">${p.date || 'Unknown date'} · ${p.files || 0} files</div>
+                </div>
+                <div class="profile-actions">
+                    <button class="btn-mini btn-restore" onclick="restoreProfile('${p.name}')">
+                        <i data-lucide="download" style="width:12px;height:12px"></i> Restore
+                    </button>
+                    <button class="btn-mini btn-delete" onclick="deleteProfile('${p.name}')">
+                        <i data-lucide="trash-2" style="width:12px;height:12px"></i>
+                    </button>
+                </div>`;
+            listEl.appendChild(card);
+        });
+    }
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+async function backupProfile() {
+    const nameInput = document.getElementById('profileNameInput');
+    const name = nameInput.value.trim().replace(/[^a-zA-Z0-9_\-]/g, '_');
+    if (!name) { showToast('Enter a profile name', 'error'); return; }
+    if (!config.target_apps?.length) { showToast('Add target apps first', 'error'); return; }
+
+    const btn = document.getElementById('btnBackup');
+    btn.classList.add('loading');
+
+    // Save current config first
+    collectFormValues(); config.enabled = true;
+    await writeConfigFile(config);
+
+    const backupDir = getBackupPath();
+    const apps = config.target_apps.join(' ');
+    const r = await execShell(`sh ${BACKUP_SCRIPT} backup "${backupDir}" "${name}" ${apps}`);
+
+    btn.classList.remove('loading');
+    if (r.errno === 0) {
+        nameInput.value = '';
+        showToast(`Profile "${name}" saved`, 'success');
+        loadProfiles();
+    } else {
+        showToast('Backup failed', 'error');
+    }
+}
+
+async function restoreProfile(name) {
+    if (!config.target_apps?.length) { showToast('Add target apps first', 'error'); return; }
+
+    const backupDir = getBackupPath();
+    const apps = config.target_apps.join(' ');
+
+    showToast('Restoring...', 'success');
+    const r = await execShell(`sh ${BACKUP_SCRIPT} restore "${backupDir}" "${name}" ${apps}`);
+
+    if (r.errno === 0) {
+        // Reload config from restored profile.json
+        await loadConfig();
+        showToast(`Profile "${name}" restored`, 'success');
+    } else {
+        showToast('Restore failed', 'error');
+    }
+}
+
+async function deleteProfile(name) {
+    const backupDir = getBackupPath();
+    const r = await execShell(`sh ${BACKUP_SCRIPT} delete "${backupDir}" "${name}"`);
+    if (r.errno === 0) {
+        showToast(`Deleted "${name}"`, 'success');
+        loadProfiles();
+    } else {
+        showToast('Delete failed', 'error');
+    }
+}
+
+// ============================================================================
 // Toast
 // ============================================================================
 let toastTimeout = null;
@@ -570,10 +675,13 @@ function showToast(msg, type = 'success') {
 document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('newWipeDirInput').addEventListener('keydown', e => { if (e.key === 'Enter') addWipeDir(); });
     document.getElementById('appSearchInput').addEventListener('keydown', e => { if (e.key === 'Enter') addSelectedApp(); });
+    document.getElementById('profileNameInput').addEventListener('keydown', e => { if (e.key === 'Enter') backupProfile(); });
     // Close dropdown when clicking outside
     document.addEventListener('click', (e) => {
         const container = document.getElementById('appDropdownContainer');
         if (container && !container.contains(e.target)) closeDropdown();
     });
+    // Load profiles after config is loaded
+    setTimeout(loadProfiles, 500);
 });
 loadConfig();
