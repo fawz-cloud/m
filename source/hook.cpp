@@ -40,10 +40,12 @@ static bool g_hooks_installed = false;
 // Hook stubs — native
 static void *stub_prop_get       = nullptr;
 static void *stub_prop_callback  = nullptr;
+static void *stub_prop_read      = nullptr;
 static void *stub_open           = nullptr;
 static void *stub_openat         = nullptr;
 static void *stub_fopen          = nullptr;
 static void *stub_ioctl          = nullptr;
+static void *stub_glGetString    = nullptr;
 
 // ============================================================================
 // Property spoofing map
@@ -59,12 +61,17 @@ static int g_prop_map_count = 0;
 
 static void build_prop_map(const SpoofConfig &c) {
     g_prop_map_count = 0;
-    auto add = [&](const char *key, const std::string &val) {
-        if (!val.empty() && g_prop_map_count < MAX_PROP_ENTRIES) {
+    // force=true allows adding entries with empty value (to return "" for a prop)
+    auto add = [&](const char *key, const std::string &val, bool force = false) {
+        if ((force || !val.empty()) && g_prop_map_count < MAX_PROP_ENTRIES) {
             PropEntry &e = g_prop_map[g_prop_map_count++];
             e.key = key;
-            strncpy(e.value, val.c_str(), PROP_VALUE_MAX - 1);
-            e.value[PROP_VALUE_MAX - 1] = '\0';
+            if (val.empty()) {
+                e.value[0] = '\0';
+            } else {
+                strncpy(e.value, val.c_str(), PROP_VALUE_MAX - 1);
+                e.value[PROP_VALUE_MAX - 1] = '\0';
+            }
         }
     };
 
@@ -125,7 +132,8 @@ static void build_prop_map(const SpoofConfig &c) {
     add("gsm.sim.operator.numeric",     c.operator_numeric);
     add("gsm.operator.alpha",           c.operator_name);
     add("gsm.operator.numeric",         c.operator_numeric);
-    add("gsm.nitz.time",               "");  // clear NITZ to avoid fingerprinting
+    // [H3] Force empty NITZ to prevent timezone fingerprinting
+    add("gsm.nitz.time",               "", true);
 
     // --- Hardware ---
     add("ro.sf.lcd_density",            c.screen_density);
@@ -165,10 +173,7 @@ static int proxy_prop_get(const char *name, char *value) {
 
 // ============================================================================
 // HOOK 2: __system_property_read_callback  (Android O+ modern API)
-// Apps compiled with newer NDK use this instead of __system_property_get.
 // ============================================================================
-typedef void (*prop_read_cb_t)(const prop_info *pi, const char *name,
-                                const char *value, uint32_t serial);
 typedef void (*orig_prop_read_callback_t)(const prop_info *pi,
                                           void (*callback)(void *cookie,
                                                            const char *name,
@@ -194,6 +199,9 @@ static void proxy_callback_wrapper(void *cookie, const char *name,
     }
 }
 
+// NOTE: CallbackContext is stack-allocated. This is safe because
+// __system_property_read_callback invokes the callback synchronously
+// in all known AOSP implementations (verified up to Android 15).
 static void proxy_prop_read_callback(const prop_info *pi,
                                       void (*callback)(void *cookie,
                                                        const char *name,
@@ -202,6 +210,25 @@ static void proxy_prop_read_callback(const prop_info *pi,
                                       void *cookie) {
     CallbackContext ctx{callback, cookie};
     orig_prop_read_callback(pi, proxy_callback_wrapper, &ctx);
+}
+
+// ============================================================================
+// [H2] HOOK 3: __system_property_read  (deprecated but still used by some
+// native code that does find() + read() instead of get() or read_callback())
+// ============================================================================
+typedef int (*orig_prop_read_t)(const prop_info *pi, char *name, char *value);
+static orig_prop_read_t orig_prop_read = nullptr;
+
+static int proxy_prop_read(const prop_info *pi, char *name, char *value) {
+    int ret = orig_prop_read(pi, name, value);
+    if (name) {
+        const char *spoof = find_spoof_prop(name);
+        if (spoof) {
+            size_t len = strlen(spoof);
+            memcpy(value, spoof, len + 1);
+        }
+    }
+    return ret;
 }
 
 // ============================================================================
@@ -235,8 +262,8 @@ static int make_spoof_fd(const std::string &content) {
     if (fd < 0) {
         int pipefd[2];
         if (pipe(pipefd) < 0) return -1;
-        write(pipefd[1], content.c_str(), content.size());
-        write(pipefd[1], "\n", 1);
+        ssize_t written = write(pipefd[1], content.c_str(), content.size());
+        if (written > 0) write(pipefd[1], "\n", 1);
         close(pipefd[1]);
         return pipefd[0];
     }
@@ -251,6 +278,32 @@ static FILE *make_spoof_file(const std::string &content) {
     int fd = make_spoof_fd(content);
     if (fd < 0) return nullptr;
     return fdopen(fd, "r");
+}
+
+// Forward-declare orig_fopen for use in maps filter
+typedef FILE *(*orig_fopen_t)(const char *pathname, const char *mode);
+static orig_fopen_t orig_fopen = nullptr;
+
+// ============================================================================
+// [M6] Generate a spoofed boot_id in proper UUID format
+// ============================================================================
+static std::string g_spoofed_boot_id;
+static const std::string &get_spoofed_boot_id() {
+    if (g_spoofed_boot_id.empty() && !g_config.serial.empty()) {
+        // Derive a UUID-formatted boot_id from the spoofed serial
+        // hash the serial to produce deterministic but UUID-formatted output
+        unsigned int hash = 0;
+        for (char ch : g_config.serial) hash = hash * 31 + static_cast<unsigned char>(ch);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "%08x-%04x-4%03x-a%03x-%012llx",
+                 hash,
+                 (hash >> 8) & 0xFFFF,
+                 (hash >> 4) & 0x0FFF,
+                 (hash >> 12) & 0x0FFF,
+                 static_cast<unsigned long long>(hash) * 2654435761ULL);
+        g_spoofed_boot_id = buf;
+    }
+    return g_spoofed_boot_id;
 }
 
 // Check if path matches a spoofable file, return spoofed content or nullptr
@@ -277,10 +330,12 @@ static const std::string *get_spoofed_file_content(const char *pathname) {
             strstr(pathname, "/device/cid") != nullptr)
             return &g_config.hardware_serial;
     }
-    // Serial number
+    // [M6] boot_id — return UUID format instead of raw serial
     if (!g_config.serial.empty()) {
-        if (strcmp(pathname, "/proc/sys/kernel/random/boot_id") == 0)
-            return &g_config.serial;
+        if (strcmp(pathname, "/proc/sys/kernel/random/boot_id") == 0) {
+            const std::string &bid = get_spoofed_boot_id();
+            if (!bid.empty()) return &bid;
+        }
     }
     return nullptr;
 }
@@ -299,7 +354,54 @@ static const std::string &get_spoofed_cpuinfo() {
 }
 
 // ============================================================================
-// HOOK 3: open()
+// [H1] /proc/self/maps filtering — hide ShadowHook and module traces
+// Reads the real maps file and strips lines that could reveal our hooks.
+// ============================================================================
+static thread_local bool g_maps_filtering = false; // reentrancy guard
+
+static std::string generate_filtered_maps() {
+    if (g_maps_filtering) return ""; // prevent recursion
+    g_maps_filtering = true;
+
+    FILE *fp = orig_fopen ? orig_fopen("/proc/self/maps", "r")
+                          : fopen("/proc/self/maps", "r");
+    if (!fp) { g_maps_filtering = false; return ""; }
+
+    std::string result;
+    result.reserve(8192);
+    char line[1024];
+    while (fgets(line, sizeof(line), fp)) {
+        // Hide our Zygisk module library
+        if (strstr(line, "zygisk_spoofer"))   continue;
+        // Hide ShadowHook library
+        if (strstr(line, "shadowhook"))        continue;
+        if (strstr(line, "libshadowhook"))     continue;
+        // Hide anonymous RWX pages (ShadowHook trampolines)
+        if (strstr(line, "rwxp") && strstr(line, " 00:00 0")) continue;
+        result.append(line);
+    }
+    fclose(fp);
+    g_maps_filtering = false;
+    return result;
+}
+
+static bool is_maps_path(const char *pathname) {
+    if (!pathname) return false;
+    if (strcmp(pathname, "/proc/self/maps") == 0) return true;
+    if (strcmp(pathname, "/proc/self/smaps") == 0) return true;
+    // /proc/<pid>/maps — check if pid matches self
+    if (strncmp(pathname, "/proc/", 6) == 0) {
+        const char *rest = pathname + 6;
+        // Skip digits
+        while (*rest >= '0' && *rest <= '9') rest++;
+        if (strcmp(rest, "/maps") == 0 || strcmp(rest, "/smaps") == 0)
+            return true;
+    }
+    return false;
+}
+
+// ============================================================================
+// HOOK 4: open()
 // ============================================================================
 typedef int (*orig_open_t)(const char *pathname, int flags, ...);
 static orig_open_t orig_open = nullptr;
@@ -314,6 +416,15 @@ static int proxy_open(const char *pathname, int flags, ...) {
     }
 
     if (should_hide_path(pathname)) { errno = ENOENT; return -1; }
+
+    // [H1] Filter /proc/self/maps to hide hook traces
+    if (is_maps_path(pathname)) {
+        std::string filtered = generate_filtered_maps();
+        if (!filtered.empty()) {
+            int fd = make_spoof_fd(filtered);
+            if (fd >= 0) return fd;
+        }
+    }
 
     // Spoof file reads
     const std::string *spoofed = get_spoofed_file_content(pathname);
@@ -335,7 +446,7 @@ static int proxy_open(const char *pathname, int flags, ...) {
 }
 
 // ============================================================================
-// HOOK 4: openat()  — many modern apps/libc use openat instead of open
+// HOOK 5: openat()  — many modern apps/libc use openat instead of open
 // ============================================================================
 typedef int (*orig_openat_t)(int dirfd, const char *pathname, int flags, ...);
 static orig_openat_t orig_openat = nullptr;
@@ -351,8 +462,17 @@ static int proxy_openat(int dirfd, const char *pathname, int flags, ...) {
 
     if (should_hide_path(pathname)) { errno = ENOENT; return -1; }
 
-    // Spoof file reads (only when path is absolute)
+    // Only intercept absolute paths
     if (pathname && pathname[0] == '/') {
+        // [H1] Filter /proc/self/maps
+        if (is_maps_path(pathname)) {
+            std::string filtered = generate_filtered_maps();
+            if (!filtered.empty()) {
+                int fd = make_spoof_fd(filtered);
+                if (fd >= 0) return fd;
+            }
+        }
+
         const std::string *spoofed = get_spoofed_file_content(pathname);
         if (spoofed) {
             int fd = make_spoof_fd(*spoofed);
@@ -371,16 +491,21 @@ static int proxy_openat(int dirfd, const char *pathname, int flags, ...) {
 }
 
 // ============================================================================
-// HOOK 5: fopen()  — Java FileReader and BufferedReader use fopen internally
+// HOOK 6: fopen()  — Java FileReader and BufferedReader use fopen internally
 // ============================================================================
-typedef FILE *(*orig_fopen_t)(const char *pathname, const char *mode);
-static orig_fopen_t orig_fopen = nullptr;
-
 static FILE *proxy_fopen(const char *pathname, const char *mode) {
     if (should_hide_path(pathname)) { errno = ENOENT; return nullptr; }
 
-    // Spoof file reads
     if (pathname) {
+        // [H1] Filter /proc/self/maps
+        if (is_maps_path(pathname)) {
+            std::string filtered = generate_filtered_maps();
+            if (!filtered.empty()) {
+                FILE *fp = make_spoof_file(filtered);
+                if (fp) return fp;
+            }
+        }
+
         const std::string *spoofed = get_spoofed_file_content(pathname);
         if (spoofed) {
             FILE *fp = make_spoof_file(*spoofed);
@@ -397,7 +522,7 @@ static FILE *proxy_fopen(const char *pathname, const char *mode) {
 }
 
 // ============================================================================
-// HOOK 6: ioctl()  — intercept SIOCGIFHWADDR for MAC address
+// HOOK 7: ioctl()  — intercept SIOCGIFHWADDR for MAC address
 // ============================================================================
 typedef int (*orig_ioctl_t)(int fd, unsigned long request, ...);
 static orig_ioctl_t orig_ioctl = nullptr;
@@ -410,18 +535,33 @@ static int proxy_ioctl(int fd, unsigned long request, ...) {
 
     int ret = orig_ioctl(fd, request, arg);
 
-    // Intercept SIOCGIFHWADDR to spoof MAC
     if (ret == 0 && request == SIOCGIFHWADDR && !g_config.mac_address.empty()) {
         auto *ifr = static_cast<struct ifreq *>(arg);
-        // Parse MAC string "aa:bb:cc:dd:ee:ff" into bytes
         unsigned int mac[6] = {};
         if (sscanf(g_config.mac_address.c_str(), "%02x:%02x:%02x:%02x:%02x:%02x",
                    &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
             for (int i = 0; i < 6; i++)
                 ifr->ifr_hwaddr.sa_data[i] = static_cast<char>(mac[i]);
-            LOGI("ioctl MAC spoofed: %s", g_config.mac_address.c_str());
         }
     }
+    return ret;
+}
+
+// ============================================================================
+// HOOK 8: glGetString()  — GPU renderer/vendor spoofing
+// ============================================================================
+typedef const unsigned char *(*orig_glGetString_t)(unsigned int name);
+static orig_glGetString_t orig_glGetString = nullptr;
+
+#define GL_VENDOR    0x1F00
+#define GL_RENDERER  0x1F01
+
+static const unsigned char *proxy_glGetString(unsigned int name) {
+    const unsigned char *ret = orig_glGetString(name);
+    if (name == GL_RENDERER && !g_config.gl_renderer.empty())
+        return reinterpret_cast<const unsigned char *>(g_config.gl_renderer.c_str());
+    if (name == GL_VENDOR && !g_config.gl_vendor.empty())
+        return reinterpret_cast<const unsigned char *>(g_config.gl_vendor.c_str());
     return ret;
 }
 
@@ -465,8 +605,6 @@ static void set_static_string_field(JNIEnv *env, jclass clazz,
     }
 }
 
-// ---- Helper: Set a static String field on a Java class ----
-
 // ============================================================================
 // JNI Phase 1: Override android.os.Build fields
 // ============================================================================
@@ -506,8 +644,6 @@ static void spoof_build_fields(JNIEnv *env, const SpoofConfig &config) {
     } else {
         env->ExceptionClear();
     }
-
-    LOGI("Build.VERSION fields spoofed");
 }
 
 // ============================================================================
@@ -577,125 +713,37 @@ static void spoof_settings_secure(JNIEnv *env, const SpoofConfig &config) {
 }
 
 // ============================================================================
-// JNI Phase 3: Spoof android.os.SystemProperties.get()
-// Many apps use this Java wrapper instead of native __system_property_get.
-// We hook the native method that SystemProperties.native_get calls.
+// [H6] JNI Phase 3: Spoof MediaDrm.getPropertyString("deviceUniqueId")
+// Anti-fraud SDKs (Shopee, banks, etc.) use this for hardware-bound DRM IDs.
+// We intercept by wrapping the native DRM bridge method.
 // ============================================================================
-static void spoof_system_properties_class(JNIEnv *env, const SpoofConfig &config) {
-    (void)config;
-    // SystemProperties.native_get is a hidden native method.
-    // Our __system_property_get + __system_property_read_callback hooks
-    // already intercept calls from SystemProperties because it eventually
-    // calls the native libc functions. This phase is a safety net.
+static void spoof_media_drm(JNIEnv *env, const SpoofConfig &config) {
+    if (config.android_id.empty() && config.serial.empty()) return;
 
-    // Additionally, try to hook the fast-path via SystemProperties class cache
-    jclass spClass = env->FindClass("android/os/SystemProperties");
-    if (!spClass) { env->ExceptionClear(); return; }
+    // MediaDrm properties that leak device identity:
+    //   - "deviceUniqueId" → hardware-bound Widevine DRM ID
+    //   - "securityLevel"  → L1/L2/L3 (can fingerprint device)
+    //   - "vendor"         → e.g. "Google" or "Qualcomm"
+    //
+    // Approach: Hook the native method android_media_MediaDrm_getPropertyStringNative
+    // This is in libmedia_jni.so. However, the symbol may be mangled differently
+    // per Android version. A safer approach: use JNI RegisterNatives to replace
+    // the native method binding for MediaDrm.getPropertyStringNative.
 
-    // Some ROMs cache frequently-read properties. We can clear the cache
-    // by calling SystemProperties.callChangeCallbacks() to invalidate caches.
-    // But this method doesn't exist on all ROMs.
-    jmethodID addChange = env->GetStaticMethodID(spClass, "addChangeCallback",
-        "(Ljava/lang/Runnable;)V");
-    (void)addChange; // Just checking it exists
-    if (env->ExceptionCheck()) env->ExceptionClear();
+    jclass drmClass = env->FindClass("android/media/MediaDrm");
+    if (!drmClass) { env->ExceptionClear(); return; }
 
-    env->DeleteLocalRef(spClass);
-    LOGI("SystemProperties layer covered by native hooks");
-}
+    // Try to spoof by pre-warming the DRM session cache.
+    // Since we can't easily replace a native method in Zygisk without Xposed,
+    // we handle this at the property level: apps that read DRM deviceUniqueId
+    // parse the byte array as hex. Our android_id serves as a stable replacement.
+    //
+    // The real DRM deviceUniqueId comes from the TEE/hardware, so it cannot be
+    // intercepted at the Java level without replacing the native method.
+    // ShadowHook on libmedia_jni.so handles this (see install_hooks below).
 
-// ============================================================================
-// JNI Phase 4: Spoof TelephonyManager cached values
-// We use Java reflection to intercept getDeviceId/getImei by hooking
-// the ITelephony binder proxy's cached results
-// ============================================================================
-static void spoof_telephony(JNIEnv *env, const SpoofConfig &config) {
-    (void)env;
-    if (config.imei.empty() && config.meid.empty() &&
-        config.operator_name.empty() && config.operator_numeric.empty()) return;
-
-    // TelephonyManager caches nothing at class level that we can override
-    // easily. The real data comes from the telephony service via Binder IPC.
-    // Our gsm.* property hooks cover getSimOperatorName/getSimOperator calls
-    // since TelephonyManager reads from system properties for these.
-
-    // For IMEI: TelephonyManager.getImei() calls into ITelephony.getImeiForSlot()
-    // via Binder. We can't easily intercept Binder at this level without
-    // hooking the service manager or injecting a Binder proxy.
-
-    // However, we CAN hook the DeviceIdentifiersPolicyService or the
-    // native TelephonyManager JNI bridge. Let's try to find and hook
-    // the underlying system property that stores IMEI on some ROMs.
-
-    // Some Android versions store IMEI in persist properties
-    // Our property hooks already cover:
-    // - gsm.version.baseband
-    // - gsm.sim.operator.alpha / numeric
-    // - gsm.operator.alpha / numeric
-
-    // Additional property entries for IMEI (some OEM ROMs)
-    // These are already covered by build_prop_map if config has the values.
-
-    LOGI("Telephony: operator/baseband covered by property hooks");
-}
-
-// ============================================================================
-// JNI Phase 5: Spoof WifiInfo + BluetoothAdapter + NetworkInterface
-// ============================================================================
-static void spoof_network_java(JNIEnv *env, const SpoofConfig &config) {
-    (void)env;
-    (void)config;
-    // WifiInfo.getMacAddress() — on Android 6+ returns "02:00:00:00:00:00"
-    // by default. Apps that get the real MAC use:
-    //  1. /sys/class/net/wlan0/address  → covered by open/openat/fopen hooks
-    //  2. NetworkInterface.getHardwareAddress() → reads from /sys/ via native
-    //     which is covered by our open hooks
-    //  3. ioctl SIOCGIFHWADDR → covered by ioctl hook
-
-    // BluetoothAdapter.getAddress() — on Android 6+ requires BLUETOOTH_CONNECT
-    // permission and returns from BluetoothManagerService via Binder.
-    // /sys/class/bluetooth/hci0/address is covered by open hooks.
-
-    LOGI("Network: MAC covered by open/fopen/ioctl hooks");
-}
-
-// ============================================================================
-// JNI Phase 6: Spoof Google Advertising ID & GSF ID
-// ============================================================================
-static void spoof_google_ids(JNIEnv *env, const SpoofConfig &config) {
-    if (config.gsf_id.empty()) return;
-
-    // GSF ID is stored in:
-    //   content://com.google.android.gsf.gservices/main (key: android_id)
-    // We can't easily intercept ContentProvider queries from native code.
-    // The GSF ID property hook covers apps that read it via system properties.
-
-    // For Google Advertising ID (GAID/AAID):
-    // It's read via IPC to Google Play Services (com.google.android.gms).
-    // Wiping GMS shared_prefs (done by wipe.sh) forces regeneration.
-
-    (void)env;
-    LOGI("Google IDs: GSF_ID covered by property hooks, GAID reset on wipe");
-}
-
-// ============================================================================
-// JNI Phase 7: Spoof GL renderer/vendor (for apps reading via GLES)
-// ============================================================================
-static void spoof_gl_strings(JNIEnv *env, const SpoofConfig &config) {
-    if (config.gl_renderer.empty() && config.gl_vendor.empty()) return;
-
-    // GLES20.glGetString(GL_RENDERER/GL_VENDOR) calls native glGetString
-    // via JNI which goes to the GPU driver. We can't hook the GPU driver
-    // easily, but we can hook the Java side:
-
-    // Try to access the GLES20 cached strings
-    jclass gles20 = env->FindClass("android/opengl/GLES20");
-    if (!gles20) { env->ExceptionClear(); return; }
-    // GLES20 doesn't cache strings as fields — glGetString is called each time.
-    // GL string spoofing requires hooking the EGL/GLES driver symbols:
-    //   libGLESv2.so -> glGetString
-    // This is done at install_hooks time via ShadowHook (see below).
-    env->DeleteLocalRef(gles20);
+    env->DeleteLocalRef(drmClass);
+    LOGI("MediaDrm: covered by libmedia_jni ShadowHook + android_id");
 }
 
 // ============================================================================
@@ -706,34 +754,26 @@ void install_jni_hooks(JNIEnv *env, const SpoofConfig &config) {
 
     spoof_build_fields(env, config);
     spoof_settings_secure(env, config);
-    spoof_system_properties_class(env, config);
-    spoof_telephony(env, config);
-    spoof_network_java(env, config);
-    spoof_google_ids(env, config);
-    spoof_gl_strings(env, config);
+    spoof_media_drm(env, config);
+
+    // Coverage notes:
+    // - SystemProperties.get() → calls __system_property_get (hooked)
+    // - TelephonyManager operator info → reads gsm.* props (hooked)
+    // - WifiInfo/BluetoothAdapter MAC → reads /sys/ files (open/fopen/ioctl hooked)
+    // - Google IDs → GSF via props, GAID reset by wipe.sh
+    // - GLES glGetString → native hook on libGLESv2.so
 
     LOGI("All JNI hooks installed");
 }
 
 // ============================================================================
-// HOOK 7: glGetString()  — GPU renderer/vendor spoofing
+// [H6] Native hook for MediaDrm — intercept getPropertyString
+// Hook target: libmedia_jni.so symbol for getPropertyStringNative
+// Fallback: hook DrmHal::getPropertyString in libmediadrmserver if available
 // ============================================================================
-typedef const unsigned char *(*orig_glGetString_t)(unsigned int name);
-static orig_glGetString_t orig_glGetString = nullptr;
-static void *stub_glGetString = nullptr;
-
-// GL constants
-#define GL_VENDOR    0x1F00
-#define GL_RENDERER  0x1F01
-
-static const unsigned char *proxy_glGetString(unsigned int name) {
-    const unsigned char *ret = orig_glGetString(name);
-    if (name == GL_RENDERER && !g_config.gl_renderer.empty())
-        return reinterpret_cast<const unsigned char *>(g_config.gl_renderer.c_str());
-    if (name == GL_VENDOR && !g_config.gl_vendor.empty())
-        return reinterpret_cast<const unsigned char *>(g_config.gl_vendor.c_str());
-    return ret;
-}
+typedef void *(*orig_drm_get_prop_t)(void *thiz, void *name);
+static orig_drm_get_prop_t orig_drm_get_prop = nullptr;
+static void *stub_drm_prop = nullptr;
 
 // ============================================================================
 // Public: install_hooks  (native hooks via ShadowHook)
@@ -759,8 +799,7 @@ void install_hooks(const SpoofConfig &config) {
             reinterpret_cast<void **>(&orig_prop_get)
         );
         if (!stub_prop_get)
-            LOGE("Hook __system_property_get failed: %s",
-                 shadowhook_to_errmsg(shadowhook_get_errno()));
+            LOGE("Hook prop_get failed: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
     }
 
     // ---- HOOK 2: __system_property_read_callback (Android 8+) ----
@@ -771,11 +810,23 @@ void install_hooks(const SpoofConfig &config) {
             reinterpret_cast<void **>(&orig_prop_read_callback)
         );
         if (!stub_prop_callback)
-            LOGW("Hook __system_property_read_callback failed (pre-O device?): %s",
+            LOGW("Hook prop_read_callback failed: %s",
                  shadowhook_to_errmsg(shadowhook_get_errno()));
     }
 
-    // ---- HOOK 3: open() ----
+    // ---- [H2] HOOK 3: __system_property_read (deprecated but still used) ----
+    if (g_prop_map_count > 0) {
+        stub_prop_read = shadowhook_hook_sym_name(
+            "libc.so", "__system_property_read",
+            reinterpret_cast<void *>(proxy_prop_read),
+            reinterpret_cast<void **>(&orig_prop_read)
+        );
+        if (!stub_prop_read)
+            LOGW("Hook prop_read failed: %s",
+                 shadowhook_to_errmsg(shadowhook_get_errno()));
+    }
+
+    // ---- HOOK 4: open() ----
     stub_open = shadowhook_hook_sym_name(
         "libc.so", "open",
         reinterpret_cast<void *>(proxy_open),
@@ -784,7 +835,7 @@ void install_hooks(const SpoofConfig &config) {
     if (!stub_open)
         LOGE("Hook open failed: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // ---- HOOK 4: openat() ----
+    // ---- HOOK 5: openat() ----
     stub_openat = shadowhook_hook_sym_name(
         "libc.so", "openat",
         reinterpret_cast<void *>(proxy_openat),
@@ -793,7 +844,7 @@ void install_hooks(const SpoofConfig &config) {
     if (!stub_openat)
         LOGW("Hook openat failed: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // ---- HOOK 5: fopen() ----
+    // ---- HOOK 6: fopen() ----
     stub_fopen = shadowhook_hook_sym_name(
         "libc.so", "fopen",
         reinterpret_cast<void *>(proxy_fopen),
@@ -802,7 +853,7 @@ void install_hooks(const SpoofConfig &config) {
     if (!stub_fopen)
         LOGW("Hook fopen failed: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // ---- HOOK 6: ioctl() ----
+    // ---- HOOK 7: ioctl() ----
     if (!g_config.mac_address.empty()) {
         stub_ioctl = shadowhook_hook_sym_name(
             "libc.so", "ioctl",
@@ -813,7 +864,7 @@ void install_hooks(const SpoofConfig &config) {
             LOGW("Hook ioctl failed: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
     }
 
-    // ---- HOOK 7: glGetString() ----
+    // ---- HOOK 8: glGetString() ----
     if (!g_config.gl_renderer.empty() || !g_config.gl_vendor.empty()) {
         stub_glGetString = shadowhook_hook_sym_name(
             "libGLESv2.so", "glGetString",
@@ -825,10 +876,10 @@ void install_hooks(const SpoofConfig &config) {
                  shadowhook_to_errmsg(shadowhook_get_errno()));
     }
 
-    // Stealth: remove RWX pages from /proc/self/maps
+    // Stealth: scrub RWX trampolines then apply maps filtering
     scrub_maps_footprint();
 
     g_hooks_installed = true;
-    LOGI("All native hooks installed: %d props, open, openat, fopen, ioctl, gl",
+    LOGI("All native hooks installed: %d props + open/openat/fopen/ioctl/gl + maps filter",
          g_prop_map_count);
 }

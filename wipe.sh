@@ -30,9 +30,14 @@ wipe_app() {
   [ -d "${SDCARD}/.${pkg_short}" ] && rm -rf "${SDCARD}/.${pkg_short}"
 
   if [ -f "$CONFIG_FILE" ]; then
-    local custom_dirs=$(grep -o '"custom_wipe_dirs"[[:space:]]*:[[:space:]]*\[.*\]' "$CONFIG_FILE" | grep -o '"[^"]*"' | tr -d '"' | tail -n +1)
+    # [M4] Parse custom_wipe_dirs from multiline JSON using awk
+    local custom_dirs=$(awk '
+      /"custom_wipe_dirs"/ { found=1; next }
+      found && /\]/ { found=0 }
+      found { gsub(/[",[:space:]]/, ""); if (length > 0) print }
+    ' "$CONFIG_FILE")
     for custom_dir in $custom_dirs; do
-      [ "$custom_dir" != "custom_wipe_dirs" ] && [ -e "${SDCARD}/${custom_dir}" ] && rm -rf "${SDCARD}/${custom_dir}" && log "  Custom: ${custom_dir}"
+      [ -e "${SDCARD}/${custom_dir}" ] && rm -rf "${SDCARD}/${custom_dir}" && log "  Custom: ${custom_dir}"
     done
   fi
 

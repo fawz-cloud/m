@@ -459,15 +459,22 @@ function randomizeAll() {
     showToast(`${p.brand} ${p.model}`, 'success');
 }
 
-// ============================================================================
+/// ============================================================================
 // Save / Wipe / Burn
 // ============================================================================
+// [H5] Safe config writer: base64 encode to avoid shell metacharacter issues
+async function writeConfigFile(configObj) {
+    const json = JSON.stringify(configObj, null, 2);
+    // btoa() is available in WebView — encode JSON as base64 to avoid any shell escaping
+    const b64 = btoa(unescape(encodeURIComponent(json)));
+    const r = await execShell(`echo '${b64}' | base64 -d > ${CONFIG_PATH}`);
+    return r;
+}
+
 async function saveConfig() {
     const btn = document.getElementById('btnSave'); btn.classList.add('loading');
     collectFormValues(); config.enabled = true;
-    const json = JSON.stringify(config, null, 2);
-    const escaped = json.replace(/'/g, "'\\''");
-    const r = await execShell(`echo '${escaped}' > ${CONFIG_PATH}`);
+    const r = await writeConfigFile(config);
     btn.classList.remove('loading');
     showToast(r.errno === 0 ? 'Config saved! Restart target apps.' : 'Save failed', r.errno === 0 ? 'success' : 'error');
 }
@@ -483,9 +490,7 @@ async function wipeAllTargets() {
 async function burnAndSpoof() {
     const btn = document.getElementById('btnBurnSpoof'); btn.classList.add('loading');
     randomizeAll(); collectFormValues(); config.enabled = true;
-    const json = JSON.stringify(config, null, 2);
-    const escaped = json.replace(/'/g, "'\\''");
-    await execShell(`echo '${escaped}' > ${CONFIG_PATH}`);
+    await writeConfigFile(config);
     if (config.target_apps?.length) await execShell(`sh ${WIPE_SCRIPT} ${config.target_apps.join(' ')}`);
     btn.classList.remove('loading');
     showToast('Identity burned! Open target apps.', 'success');
