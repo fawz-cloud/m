@@ -825,6 +825,63 @@ static void spoof_knox(JNIEnv *env, const SpoofConfig &config) {
 }
 
 // ============================================================================
+// JNI Phase 4: Spoof SSAID via settings_ssaid.xml file rewrite
+// Some apps read the SSAID directly from the XML file instead of using
+// Settings.Secure API. We rewrite the file to inject our spoofed android_id.
+// ============================================================================
+static void spoof_ssaid_file(JNIEnv *env, const SpoofConfig &config) {
+    (void)env; // JNIEnv not needed for file operations but kept for consistent API
+    if (config.android_id.empty()) return;
+
+    const char *ssaid_paths[] = {
+        "/data/system/users/0/settings_ssaid.xml",
+        nullptr
+    };
+
+    for (int i = 0; ssaid_paths[i]; i++) {
+        FILE *fp = orig_fopen ? orig_fopen(ssaid_paths[i], "r")
+                              : fopen(ssaid_paths[i], "r");
+        if (!fp) continue;
+
+        // Read entire file
+        std::string content;
+        content.reserve(4096);
+        char buf[512];
+        while (fgets(buf, sizeof(buf), fp)) {
+            content.append(buf);
+        }
+        fclose(fp);
+
+        if (content.empty()) continue;
+
+        // Replace value="<old_ssaid>" in the android_id setting entry
+        // The XML format is: <setting ... name="android_id" value="<hex>" ... />
+        // We search for the android_id entry and replace its value attribute
+        const char *needle = "name=\"android_id\"";
+        size_t pos = content.find(needle);
+        if (pos == std::string::npos) continue;
+
+        // Find the value="..." attribute near this position
+        size_t val_start = content.find("value=\"", pos);
+        if (val_start == std::string::npos) continue;
+        val_start += 7; // skip past value="
+        size_t val_end = content.find("\"", val_start);
+        if (val_end == std::string::npos) continue;
+
+        // Replace the old value with our spoofed android_id
+        content.replace(val_start, val_end - val_start, config.android_id);
+
+        // Write back
+        fp = fopen(ssaid_paths[i], "w");
+        if (fp) {
+            fwrite(content.c_str(), 1, content.size(), fp);
+            fclose(fp);
+            LOGI("SSAID file %s rewritten with spoofed android_id", ssaid_paths[i]);
+        }
+    }
+}
+
+// ============================================================================
 // Public: install_jni_hooks
 // ============================================================================
 void install_jni_hooks(JNIEnv *env, const SpoofConfig &config) {
