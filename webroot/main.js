@@ -279,16 +279,55 @@ async function fetchInstalledApps() {
     const itemsContainer = document.getElementById('dropdownItems');
     loading.style.display = 'flex';
     itemsContainer.innerHTML = '';
-    try {
-        const r = await execShell('pm list packages -3 2>/dev/null || pm list packages 2>/dev/null');
-        if (r.errno === 0 && r.stdout) {
-            installedApps = r.stdout.split('\n')
-                .map(l => l.replace('package:', '').trim())
-                .filter(p => p && p.includes('.'))
-                .sort();
-        }
-    } catch(e) { console.error('Failed to fetch apps', e); }
+
+    // Helper to extract stdout from various root manager response formats
+    function getStdout(r) {
+        if (!r) return '';
+        if (typeof r === 'string') return r;
+        if (typeof r.stdout === 'string') return r.stdout;
+        if (typeof r.out === 'string') return r.out;
+        return '';
+    }
+
+    // Try multiple command variations — different root managers handle these differently
+    const commands = [
+        'pm list packages -3',
+        'pm list packages',
+        '/system/bin/pm list packages -3',
+        'cmd package list packages -3',
+    ];
+
+    let output = '';
+    for (const cmd of commands) {
+        try {
+            const r = await execShell(cmd);
+            const stdout = getStdout(r);
+            if (stdout && stdout.includes('package:')) {
+                output = stdout;
+                break;
+            }
+            // Some managers return errno !== 0 but still have output
+            if (r && r.errno !== 0 && stdout && stdout.includes('package:')) {
+                output = stdout;
+                break;
+            }
+        } catch(e) { /* try next command */ }
+    }
+
+    if (output) {
+        installedApps = output.split('\n')
+            .map(l => l.replace(/^package:/i, '').trim())
+            .filter(p => p.length > 0 && p.includes('.'))
+            .sort();
+    }
+
     loading.style.display = 'none';
+
+    // If still empty, show manual input hint
+    if (installedApps.length === 0) {
+        document.getElementById('appSearchInput').placeholder = 'Type package name manually (e.g. com.app.name)';
+    }
+
     renderDropdownItems();
 }
 
