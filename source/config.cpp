@@ -122,6 +122,14 @@ SpoofConfig load_config() {
         config.cpu_abi          = json_get_string(sv, "cpu_abi");
         config.hardware_serial  = json_get_string(sv, "hardware_serial");
         config.soc_model        = json_get_string(sv, "soc_model");
+        // Android Version
+        config.version_release  = json_get_string(sv, "version_release");
+        config.version_sdk      = json_get_string(sv, "version_sdk");
+        config.version_codename = json_get_string(sv, "version_codename");
+        config.security_patch   = json_get_string(sv, "security_patch");
+        // Samsung Knox
+        config.knox_warranty_bit   = json_get_string(sv, "knox_warranty_bit");
+        config.knox_verified_state = json_get_string(sv, "knox_verified_state");
     }
 
     config.custom_wipe_dirs = json_get_string_array(root, "custom_wipe_dirs");

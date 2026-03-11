@@ -52,6 +52,16 @@ struct SpoofConfig {
     std::string hardware_serial;
     std::string soc_model;
 
+    // === Android Version ===
+    std::string version_release;      // e.g. "14"
+    std::string version_sdk;          // e.g. "34"
+    std::string version_codename;     // e.g. "REL"
+    std::string security_patch;       // e.g. "2024-02-01"
+
+    // === Samsung Knox ===
+    std::string knox_warranty_bit;    // "0" = not tripped
+    std::string knox_verified_state;  // "0" = verified
+
     std::vector<std::string> custom_wipe_dirs;
 };
 

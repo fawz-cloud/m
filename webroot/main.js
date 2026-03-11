@@ -173,7 +173,9 @@ const SPOOF_FIELDS = [
     'model','brand','manufacturer','device','product','board','hardware',
     'build_id','fingerprint','display','build_type','build_tags','build_user','build_host','incremental',
     'baseband','operator_name','operator_numeric',
-    'gl_renderer','gl_vendor','screen_density','screen_resolution','cpu_abi','soc_model','hardware_serial'
+    'gl_renderer','gl_vendor','screen_density','screen_resolution','cpu_abi','soc_model','hardware_serial',
+    'version_release','version_sdk','version_codename','security_patch',
+    'knox_warranty_bit','knox_verified_state'
 ];
 
 // Indonesian operators
@@ -468,6 +470,9 @@ function randomizeAll() {
         screen_density: p.density, screen_resolution: p.resolution,
         cpu_abi: 'arm64-v8a', soc_model: p.soc,
         hardware_serial: randomHex(8).toUpperCase(),
+        version_release: '14', version_sdk: '34', version_codename: 'REL',
+        security_patch: '2024-02-01',
+        knox_warranty_bit: '0', knox_verified_state: '0',
     };
     SPOOF_FIELDS.forEach(id => { const el = document.getElementById(id); if (el && vals[id] !== undefined) el.value = vals[id]; });
     collectFormValues();

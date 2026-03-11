@@ -55,7 +55,7 @@ struct PropEntry {
     char value[PROP_VALUE_MAX];
 };
 
-static constexpr int MAX_PROP_ENTRIES = 64;
+static constexpr int MAX_PROP_ENTRIES = 96;
 static PropEntry g_prop_map[MAX_PROP_ENTRIES];
 static int g_prop_map_count = 0;
 
@@ -135,12 +135,34 @@ static void build_prop_map(const SpoofConfig &c) {
     // [H3] Force empty NITZ to prevent timezone fingerprinting
     add("gsm.nitz.time",               "", true);
 
-    // --- Hardware ---
+    // --- Hardware / CPU ---
     add("ro.sf.lcd_density",            c.screen_density);
     add("ro.product.cpu.abi",           c.cpu_abi);
+    add("ro.product.cpu.abilist",       c.cpu_abi.empty() ? "" : c.cpu_abi + ",armeabi-v7a,armeabi");
+    add("ro.product.cpu.abilist64",     c.cpu_abi);
     add("ro.boot.hardware.revision",    c.hardware_serial);
     add("ro.soc.model",                c.soc_model);
     add("ro.soc.manufacturer",         c.manufacturer);
+    add("ro.hardware.cpu",             c.soc_model);
+    add("ro.board.platform",           c.board);
+    add("ro.product.first_api_level",  c.version_sdk);
+
+    // --- Android Version ---
+    add("ro.build.version.release",     c.version_release);
+    add("ro.build.version.release_or_codename", c.version_release);
+    add("ro.build.version.sdk",        c.version_sdk);
+    add("ro.build.version.codename",   c.version_codename.empty() ? "REL" : c.version_codename);
+    add("ro.build.version.security_patch", c.security_patch);
+    add("ro.vendor.build.security_patch",  c.security_patch);
+
+    // --- Samsung Knox ---
+    add("ro.boot.warranty_bit",        c.knox_warranty_bit);
+    add("ro.warranty_bit",             c.knox_warranty_bit);
+    add("ro.boot.flash.locked",        c.knox_warranty_bit.empty() ? "" : "1");
+    add("ro.boot.verifiedbootstate",   c.knox_verified_state.empty() ? "" : "green");
+    add("ro.boot.veritymode",          c.knox_verified_state.empty() ? "" : "enforcing");
+    add("ro.knox.enhance.zygote",      c.knox_warranty_bit.empty() ? "" : "0");
+    add("ro.securestorage.knox",       c.knox_warranty_bit.empty() ? "" : "false");
 
     LOGI("prop_map: %d entries", g_prop_map_count);
 }
@@ -346,9 +368,20 @@ static const std::string &get_spoofed_cpuinfo() {
     if (g_spoofed_cpuinfo.empty()) {
         std::string hw = g_config.hardware.empty() ? "unknown" : g_config.hardware;
         std::string serial = g_config.hardware_serial.empty() ? "0000000000000000" : g_config.hardware_serial;
-        g_spoofed_cpuinfo = "Processor\t: AArch64 Processor\n"
-                            "Hardware\t: " + hw + "\n"
-                            "Serial\t\t: " + serial + "\n";
+        std::string soc = g_config.soc_model.empty() ? hw : g_config.soc_model;
+        g_spoofed_cpuinfo =
+            "Processor\t: AArch64 Processor rev 1 (aarch64)\n"
+            "processor\t: 0\n"
+            "BogoMIPS\t: 38.40\n"
+            "Features\t: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics\n"
+            "CPU implementer\t: 0x41\n"
+            "CPU architecture: 8\n"
+            "CPU variant\t: 0x1\n"
+            "CPU part\t: 0xd05\n"
+            "CPU revision\t: 0\n\n"
+            "Hardware\t: " + soc + "\n"
+            "Revision\t: 0000\n"
+            "Serial\t\t: " + serial + "\n";
     }
     return g_spoofed_cpuinfo;
 }
@@ -636,10 +669,24 @@ static void spoof_build_fields(JNIEnv *env, const SpoofConfig &config) {
     env->DeleteLocalRef(buildClass);
     LOGI("Build fields spoofed");
 
-    // Build.VERSION fields
+    // Build.VERSION fields — includes Android version + security patch
     jclass versionClass = env->FindClass("android/os/Build$VERSION");
     if (versionClass) {
         set_static_string_field(env, versionClass, "INCREMENTAL", config.incremental);
+        set_static_string_field(env, versionClass, "RELEASE", config.version_release);
+        set_static_string_field(env, versionClass, "RELEASE_OR_CODENAME", config.version_release);
+        set_static_string_field(env, versionClass, "CODENAME", config.version_codename.empty() ? "" : config.version_codename);
+        set_static_string_field(env, versionClass, "SECURITY_PATCH", config.security_patch);
+
+        // SDK_INT is an int field — must spoof it separately
+        if (!config.version_sdk.empty()) {
+            jfieldID sdkField = env->GetStaticFieldID(versionClass, "SDK_INT", "I");
+            if (sdkField) {
+                env->SetStaticIntField(versionClass, sdkField, atoi(config.version_sdk.c_str()));
+            } else {
+                env->ExceptionClear();
+            }
+        }
         env->DeleteLocalRef(versionClass);
     } else {
         env->ExceptionClear();
@@ -747,6 +794,108 @@ static void spoof_media_drm(JNIEnv *env, const SpoofConfig &config) {
 }
 
 // ============================================================================
+// JNI Phase 4: Spoof SSAID via settings_ssaid.xml modification
+// Reference: sidex15/deviceidchanger — directly edits the SSAID XML file
+// This changes the per-app device ID returned by Settings.Secure.getString("android_id")
+// ============================================================================
+static void spoof_ssaid_file(JNIEnv *env, const SpoofConfig &config) {
+    (void)env;
+    if (config.android_id.empty()) return;
+
+    // SSAID file paths for user 0 (primary user)
+    const char *ssaid_path = "/data/system/users/0/settings_ssaid.xml";
+    FILE *fp = fopen(ssaid_path, "r");
+    if (!fp) { LOGW("Cannot open settings_ssaid.xml"); return; }
+
+    // Read content
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (sz <= 0 || sz > 1048576) { fclose(fp); return; }
+
+    std::string content(sz, '\0');
+    size_t rd = fread(&content[0], 1, sz, fp);
+    fclose(fp);
+    if (rd == 0) return;
+    content.resize(rd);
+
+    // Check if it's plaintext XML (not ABX binary format)
+    if (content.find("<settings") == std::string::npos &&
+        content.find("<setting") == std::string::npos) {
+        LOGW("SSAID file is ABX binary — skipping direct modification");
+        return;
+    }
+
+    // For each target app, replace SSAID value in the XML
+    bool modified = false;
+    for (const auto &app : config.target_apps) {
+        // Find: package="com.app.name" ... value="..."
+        std::string pkg_attr = "package=\"" + app + "\"";
+        size_t pos = content.find(pkg_attr);
+        if (pos == std::string::npos) continue;
+
+        // Find the value attribute within this <setting> element
+        std::string val_prefix = "value=\"";
+        size_t vpos = content.find(val_prefix, pos);
+        if (vpos == std::string::npos || vpos - pos > 300) continue;
+
+        size_t vstart = vpos + val_prefix.length();
+        size_t vend = content.find('"', vstart);
+        if (vend == std::string::npos) continue;
+
+        std::string old_val = content.substr(vstart, vend - vstart);
+        if (old_val == config.android_id) continue; // already spoofed
+
+        content.replace(vstart, vend - vstart, config.android_id);
+        modified = true;
+        LOGI("SSAID replaced for %s: %s -> %s", app.c_str(), old_val.c_str(), config.android_id.c_str());
+    }
+
+    if (modified) {
+        FILE *wfp = fopen(ssaid_path, "w");
+        if (wfp) {
+            fwrite(content.c_str(), 1, content.size(), wfp);
+            fclose(wfp);
+            // Fix permissions
+            chmod(ssaid_path, 0600);
+            LOGI("SSAID file written");
+        } else {
+            LOGW("Cannot write settings_ssaid.xml");
+        }
+    }
+}
+
+// ============================================================================
+// JNI Phase 5: Spoof Samsung Knox status
+// ============================================================================
+static void spoof_knox(JNIEnv *env, const SpoofConfig &config) {
+    if (config.knox_warranty_bit.empty()) return;
+
+    // Samsung Knox checks SemSystemProperties and KnoxUtils
+    // Override any Knox-specific Build fields
+    jclass buildClass = env->FindClass("android/os/Build");
+    if (buildClass) {
+        // Some Samsung ROMs add these static fields
+        set_static_string_field(env, buildClass, "IS_DEBUGGABLE", "0");
+        env->DeleteLocalRef(buildClass);
+    }
+
+    // Try to set Knox warranty bit via SemSystemProperties (Samsung-specific)
+    jclass semProps = env->FindClass("com/samsung/android/feature/SemFloatingFeature");
+    if (semProps) {
+        // Samsung-specific class exists — we're on a Samsung device
+        env->DeleteLocalRef(semProps);
+        LOGI("Knox: Samsung device detected, warranty props set via system_properties hook");
+    } else {
+        env->ExceptionClear();
+    }
+
+    LOGI("Knox warranty_bit=%s, verified=%s",
+         config.knox_warranty_bit.c_str(),
+         config.knox_verified_state.c_str());
+}
+
+// ============================================================================
 // Public: install_jni_hooks
 // ============================================================================
 void install_jni_hooks(JNIEnv *env, const SpoofConfig &config) {
@@ -755,13 +904,8 @@ void install_jni_hooks(JNIEnv *env, const SpoofConfig &config) {
     spoof_build_fields(env, config);
     spoof_settings_secure(env, config);
     spoof_media_drm(env, config);
-
-    // Coverage notes:
-    // - SystemProperties.get() → calls __system_property_get (hooked)
-    // - TelephonyManager operator info → reads gsm.* props (hooked)
-    // - WifiInfo/BluetoothAdapter MAC → reads /sys/ files (open/fopen/ioctl hooked)
-    // - Google IDs → GSF via props, GAID reset by wipe.sh
-    // - GLES glGetString → native hook on libGLESv2.so
+    spoof_ssaid_file(env, config);
+    spoof_knox(env, config);
 
     LOGI("All JNI hooks installed");
 }
