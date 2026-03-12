@@ -564,6 +564,12 @@ static std::string generate_spoofed_ssaid() {
     return content;
 }
 
+
+// Forward declarations for mount/status/maps filtering (defined after hooks 9-12)
+static bool is_mounts_path(const char *pathname);
+static std::string generate_filtered_mounts(const char *path);
+static std::string generate_filtered_status();
+
 // ============================================================================
 // HOOK 4: open()
 // ============================================================================
