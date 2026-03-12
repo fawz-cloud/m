@@ -362,6 +362,32 @@ static bool should_hide_path(const char *pathname) {
     return false;
 }
 
+// ============================================================================
+// [ADV] File System Sandbox — redirect tracking I/O to /dev/null
+// ============================================================================
+static const char *SANDBOX_PATHS[] = {
+    "/.adjustId", "/.adjust_sdk", "/.adjust",
+    "/.appsflyer", "/.af-", "/.appsflyer_",
+    "/.facebook_app_id", "/.fb_", "/.FacebookSdk",
+    "/.kochava", "/.branch", "/.airbridge",
+    "/.mixpanel", "/.amplitude", "/.flurry",
+    "/.bugly", "/.crashlytics", "/.firebase",
+    "/.device_id", "/.openudid", "/.uuid",
+    "/.analytics", "/.tracking", "/.advertising_id",
+    "/.did", "/.fingerprint_id", "/.installationId",
+    "/.clever_tap", "/.moengage", "/.webengage",
+    "/.singular_", "/.tenjin", "/.leanplum",
+    nullptr
+};
+
+static bool is_sandbox_path(const char *pathname) {
+    if (!pathname || !g_config.fs_sandbox) return false;
+    for (int i = 0; SANDBOX_PATHS[i]; i++) {
+        if (strstr(pathname, SANDBOX_PATHS[i]) != nullptr) return true;
+    }
+    return false;
+}
+
 // Create in-memory fd with spoofed content (no disk trace)
 static int make_spoof_fd(const std::string &content) {
     int fd = -1;
@@ -1062,32 +1088,6 @@ static void scrub_maps_footprint() {
         }
     }
     fclose(fp);
-}
-
-// ============================================================================
-// [ADV] File System Sandbox — redirect tracking I/O to /dev/null
-// ============================================================================
-static const char *SANDBOX_PATHS[] = {
-    "/.adjustId", "/.adjust_sdk", "/.adjust",
-    "/.appsflyer", "/.af-", "/.appsflyer_",
-    "/.facebook_app_id", "/.fb_", "/.FacebookSdk",
-    "/.kochava", "/.branch", "/.airbridge",
-    "/.mixpanel", "/.amplitude", "/.flurry",
-    "/.bugly", "/.crashlytics", "/.firebase",
-    "/.device_id", "/.openudid", "/.uuid",
-    "/.analytics", "/.tracking", "/.advertising_id",
-    "/.did", "/.fingerprint_id", "/.installationId",
-    "/.clever_tap", "/.moengage", "/.webengage",
-    "/.singular_", "/.tenjin", "/.leanplum",
-    nullptr
-};
-
-static bool is_sandbox_path(const char *pathname) {
-    if (!pathname || !g_config.fs_sandbox) return false;
-    for (int i = 0; SANDBOX_PATHS[i]; i++) {
-        if (strstr(pathname, SANDBOX_PATHS[i]) != nullptr) return true;
-    }
-    return false;
 }
 
 // ============================================================================
