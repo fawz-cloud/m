@@ -255,6 +255,82 @@
             </div>
         </section>
 
+        <!-- Advanced Features -->
+        <section class="section">
+            <div class="section-header">
+                <i data-lucide="settings-2" class="icon-section"></i>
+                <h2 class="section-title">Advanced Features</h2>
+            </div>
+            <p class="hint">Stealth & bypass modules — toggle independently per profile</p>
+            <div class="toggle-list">
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <i data-lucide="eye-off" class="toggle-icon"></i>
+                        <div>
+                            <div class="toggle-label">MMap Bypass</div>
+                            <div class="toggle-desc">Hide hook RWX memory pages from scanners</div>
+                        </div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="adv_mmap_bypass" />
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <i data-lucide="globe" class="toggle-icon"></i>
+                        <div>
+                            <div class="toggle-label">VPN Bypass</div>
+                            <div class="toggle-desc">Fake network as WiFi, hide VPN transport</div>
+                        </div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="vpn_bypass" />
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <i data-lucide="camera-off" class="toggle-icon"></i>
+                        <div>
+                            <div class="toggle-label">Camera Virtual</div>
+                            <div class="toggle-desc">Report 0 cameras to block selfie verification</div>
+                        </div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="camera_virtual" />
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <i data-lucide="folder-lock" class="toggle-icon"></i>
+                        <div>
+                            <div class="toggle-label">FS Sandbox</div>
+                            <div class="toggle-desc">Redirect tracking I/O to /dev/null</div>
+                        </div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="fs_sandbox" />
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <i data-lucide="shield-off" class="toggle-icon"></i>
+                        <div>
+                            <div class="toggle-label">Anti-Debug Block</div>
+                            <div class="toggle-desc">Neutralize ptrace, Frida & anti-debug tools</div>
+                        </div>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="anti_debug_block" />
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+        </section>
+
         <!-- Custom Wipe Directories -->
         <section class="section">
             <div class="section-header">

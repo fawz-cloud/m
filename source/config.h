@@ -64,6 +64,13 @@ struct SpoofConfig {
     std::string knox_warranty_bit;    // "0" = not tripped
     std::string knox_verified_state;  // "0" = verified
 
+    // === Advanced Features (toggles) ===
+    bool adv_mmap_bypass   = false;  // Hide hook RWX memory pages
+    bool vpn_bypass        = false;  // Fake NetworkCapabilities (no VPN)
+    bool camera_virtual    = false;  // Return 0 cameras
+    bool fs_sandbox        = false;  // Redirect tracking IO to /dev/null
+    bool anti_debug_block  = false;  // Neutralize ptrace/Frida/anti-debug
+
     std::vector<std::string> custom_wipe_dirs;
 };
 

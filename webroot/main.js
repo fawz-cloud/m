@@ -188,6 +188,9 @@ const OPERATORS = [
     { name:'by.U', numeric:'51010' },
 ];
 
+// Advanced feature toggle fields
+const ADVANCED_FIELDS = ['adv_mmap_bypass', 'vpn_bypass', 'camera_virtual', 'fs_sandbox', 'anti_debug_block'];
+
 // ============================================================================
 // State
 // ============================================================================
@@ -242,6 +245,12 @@ async function loadConfig() {
 function renderUI() {
     const sv = config.spoof_values || {};
     SPOOF_FIELDS.forEach(id => { const el = document.getElementById(id); if (el) el.value = sv[id] || ''; });
+    // Restore advanced toggle states
+    const adv = config.advanced || {};
+    ADVANCED_FIELDS.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.checked = !!adv[id];
+    });
     renderAppList(); renderWipeDirList();
 }
 
@@ -448,6 +457,13 @@ function collectFormValues() {
     const sv = {};
     SPOOF_FIELDS.forEach(id => { const el = document.getElementById(id); if (el) sv[id] = el.value.trim(); });
     config.spoof_values = sv;
+    // Collect advanced toggle states
+    const adv = {};
+    ADVANCED_FIELDS.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) adv[id] = el.checked;
+    });
+    config.advanced = adv;
 }
 
 // ============================================================================
@@ -481,6 +497,7 @@ function randomizeAll() {
     };
     SPOOF_FIELDS.forEach(id => { const el = document.getElementById(id); if (el && vals[id] !== undefined) el.value = vals[id]; });
     collectFormValues();
+    // Preserve advanced toggle states (don't randomize these)
     showToast(`${p.brand} ${p.model}`, 'success');
 }
 

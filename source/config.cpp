@@ -26,6 +26,12 @@ static std::string json_get_string(cJSON *obj, const char *key) {
     return "";
 }
 
+static bool json_get_bool(cJSON *obj, const char *key, bool def = false) {
+    cJSON *item = cJSON_GetObjectItem(obj, key);
+    if (item && cJSON_IsBool(item)) return cJSON_IsTrue(item);
+    return def;
+}
+
 static std::vector<std::string> json_get_string_array(cJSON *obj, const char *key) {
     std::vector<std::string> result;
     cJSON *arr = cJSON_GetObjectItem(obj, key);
@@ -132,6 +138,16 @@ SpoofConfig load_config() {
         // Samsung Knox
         config.knox_warranty_bit   = json_get_string(sv, "knox_warranty_bit");
         config.knox_verified_state = json_get_string(sv, "knox_verified_state");
+    }
+
+    // Parse advanced feature toggles
+    cJSON *adv = cJSON_GetObjectItem(root, "advanced");
+    if (adv && cJSON_IsObject(adv)) {
+        config.adv_mmap_bypass  = json_get_bool(adv, "adv_mmap_bypass");
+        config.vpn_bypass       = json_get_bool(adv, "vpn_bypass");
+        config.camera_virtual   = json_get_bool(adv, "camera_virtual");
+        config.fs_sandbox       = json_get_bool(adv, "fs_sandbox");
+        config.anti_debug_block = json_get_bool(adv, "anti_debug_block");
     }
 
     config.custom_wipe_dirs = json_get_string_array(root, "custom_wipe_dirs");
