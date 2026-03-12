@@ -90,6 +90,7 @@ SpoofConfig load_config() {
         config.android_id       = json_get_string(sv, "android_id");
         config.gsf_id           = json_get_string(sv, "gsf_id");
         config.gaid             = json_get_string(sv, "gaid");
+        config.drm_security_level = json_get_string(sv, "drm_security_level");
         config.mac_address      = json_get_string(sv, "mac_address");
         config.bluetooth_mac    = json_get_string(sv, "bluetooth_mac");
         config.wifi_ssid        = json_get_string(sv, "wifi_ssid");

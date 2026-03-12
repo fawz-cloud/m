@@ -1181,33 +1181,86 @@ static void spoof_settings_secure(JNIEnv *env, const SpoofConfig &config) {
 // Anti-fraud SDKs (Shopee, banks, etc.) use this for hardware-bound DRM IDs.
 // We intercept by wrapping the native DRM bridge method.
 // ============================================================================
+static jstring proxy_getPropertyString(JNIEnv *env, jobject thiz, jstring jname) {
+    if (!jname) return env->NewStringUTF("");
+    const char *name = env->GetStringUTFChars(jname, nullptr);
+    std::string prop(name ? name : "");
+    if (name) env->ReleaseStringUTFChars(jname, name);
+
+    if (prop == "securityLevel") {
+        std::string level = g_config.drm_security_level.empty() ? "L1" : g_config.drm_security_level;
+        return env->NewStringUTF(level.c_str());
+    } else if (prop == "vendor") {
+        return env->NewStringUTF("Google");
+    } else if (prop == "version") {
+        return env->NewStringUTF("1.0");
+    } else if (prop == "description") {
+        return env->NewStringUTF("Widevine CDM");
+    } else if (prop == "algorithms") {
+        return env->NewStringUTF("AES/CBC/NoPadding,HmacSHA256");
+    } else if (prop == "systemId") {
+        return env->NewStringUTF("4266");
+    } else if (prop == "privacyMode") {
+        return env->NewStringUTF("enable");
+    } else if (prop == "sessionSharing") {
+        return env->NewStringUTF("enable");
+    } else if (prop == "oemCryptoApiVersion") {
+        return env->NewStringUTF("16");
+    }
+    return env->NewStringUTF("");
+}
+
+static jbyteArray proxy_getPropertyByteArray(JNIEnv *env, jobject thiz, jstring jname) {
+    if (!jname) return nullptr;
+    const char *name = env->GetStringUTFChars(jname, nullptr);
+    std::string prop(name ? name : "");
+    if (name) env->ReleaseStringUTFChars(jname, name);
+
+    if (prop == "deviceUniqueId") {
+        std::string fake_id = g_config.android_id;
+        while (fake_id.length() < 32) fake_id += fake_id;
+        fake_id = fake_id.substr(0, 32);
+
+        jbyteArray arr = env->NewByteArray(32);
+        env->SetByteArrayRegion(arr, 0, 32, reinterpret_cast<const jbyte*>(fake_id.data()));
+        return arr;
+    } else if (prop == "metrics") {
+        return env->NewByteArray(0);
+    }
+    return env->NewByteArray(16);
+}
+
 static void spoof_media_drm(JNIEnv *env, const SpoofConfig &config) {
-    if (config.android_id.empty() && config.serial.empty()) return;
-
-    // MediaDrm properties that leak device identity:
-    //   - "deviceUniqueId" → hardware-bound Widevine DRM ID
-    //   - "securityLevel"  → L1/L2/L3 (can fingerprint device)
-    //   - "vendor"         → e.g. "Google" or "Qualcomm"
-    //
-    // Approach: Hook the native method android_media_MediaDrm_getPropertyStringNative
-    // This is in libmedia_jni.so. However, the symbol may be mangled differently
-    // per Android version. A safer approach: use JNI RegisterNatives to replace
-    // the native method binding for MediaDrm.getPropertyStringNative.
-
     jclass drmClass = env->FindClass("android/media/MediaDrm");
     if (!drmClass) { env->ExceptionClear(); return; }
 
-    // Try to spoof by pre-warming the DRM session cache.
-    // Since we can't easily replace a native method in Zygisk without Xposed,
-    // we handle this at the property level: apps that read DRM deviceUniqueId
-    // parse the byte array as hex. Our android_id serves as a stable replacement.
-    //
-    // The real DRM deviceUniqueId comes from the TEE/hardware, so it cannot be
-    // intercepted at the Java level without replacing the native method.
-    // ShadowHook on libmedia_jni.so handles this (see install_hooks below).
+    JNINativeMethod stringMethods[] = {
+        {"getPropertyString", "(Ljava/lang/String;)Ljava/lang/String;", reinterpret_cast<void*>(proxy_getPropertyString)},
+        {"getPropertyStringNative", "(Ljava/lang/String;)Ljava/lang/String;", reinterpret_cast<void*>(proxy_getPropertyString)}
+    };
+
+    for (const auto& method : stringMethods) {
+        if (env->RegisterNatives(drmClass, &method, 1) < 0) {
+            env->ExceptionClear();
+        } else {
+            LOGI("MediaDrm hooked: %s", method.name);
+        }
+    }
+
+    JNINativeMethod byteMethods[] = {
+        {"getPropertyByteArray", "(Ljava/lang/String;)[B", reinterpret_cast<void*>(proxy_getPropertyByteArray)},
+        {"getPropertyByteArrayNative", "(Ljava/lang/String;)[B", reinterpret_cast<void*>(proxy_getPropertyByteArray)}
+    };
+
+    for (const auto& method : byteMethods) {
+        if (env->RegisterNatives(drmClass, &method, 1) < 0) {
+            env->ExceptionClear();
+        } else {
+            LOGI("MediaDrm hooked: %s", method.name);
+        }
+    }
 
     env->DeleteLocalRef(drmClass);
-    LOGI("MediaDrm: covered by libmedia_jni ShadowHook + android_id");
 }
 
 // ============================================================================
