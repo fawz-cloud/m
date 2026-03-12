@@ -282,6 +282,26 @@ static const char *HIDE_PATHS[] = {
     nullptr
 };
 
+// Hidden packages for PM poisoning via file denial
+static const char *HIDDEN_PACKAGES[] = {
+    "com.topjohnwu.magisk",
+    "io.github.vvb2060.magisk",
+    "eu.chainfire.supersu",
+    "com.noshufou.android.su",
+    "com.koushikdutta.superuser",
+    "me.weishu.exp",
+    "org.meowcat.edxposed.manager",
+    "de.robv.android.xposed.installer",
+    "com.saurik.substrate",
+    "com.amphoras.hidemyroot",
+    "com.devadvance.rootcloak",
+    "com.formyhm.hideroot",
+    "com.zachspong.temprootremovejb",
+    "com.ramdroid.appquarantine",
+    "ch.iterative.app.pif",
+    nullptr
+};
+
 // Root / Magisk / Xposed artifacts to hide
 static const char *ROOT_PATHS[] = {
     "/system/xbin/su", "/system/bin/su", "/sbin/su",
@@ -294,12 +314,8 @@ static const char *ROOT_PATHS[] = {
     "/data/local/tmp/frida", "/data/local/tmp/re.frida.server",
     "/system/xbin/daemonsu", "/system/xbin/busybox",
     "/system/etc/init.d/99SuperSUDaemon",
-    "/data/data/com.topjohnwu.magisk",
-    "/data/data/io.github.vvb2060.magisk",
-    "/data/data/me.weishu.exp",
-    "/data/data/org.meowcat.edxposed.manager",
-    "/data/data/de.robv.android.xposed.installer",
-    "/data/data/com.saurik.substrate",
+    "/data/adb/modules/playcurl", "/data/adb/modules/playintegrityfix",
+    "/data/adb/pif.json",
     nullptr
 };
 
@@ -307,6 +323,10 @@ static bool is_root_path(const char *pathname) {
     if (!pathname) return false;
     for (int i = 0; ROOT_PATHS[i]; i++) {
         if (strcmp(pathname, ROOT_PATHS[i]) == 0) return true;
+    }
+    // Also block access to package data directories of hidden packages
+    for (int i = 0; HIDDEN_PACKAGES[i]; i++) {
+        if (strstr(pathname, HIDDEN_PACKAGES[i])) return true;
     }
     // Pattern matches
     if (strstr(pathname, "magisk")) return true;
@@ -1366,38 +1386,59 @@ static void spoof_gaid(JNIEnv *env, const SpoofConfig &config) {
 }
 
 // ============================================================================
-// JNI Phase 9: Package Manager Poisoning — hide root/hook apps
-// Remove detected packages from the installed package list
+// JNI Phase 9: Settings.Global spoofing (Hide Developer Options / ADB)
 // ============================================================================
-static const char *HIDDEN_PACKAGES[] = {
-    "com.topjohnwu.magisk",
-    "io.github.vvb2060.magisk",
-    "eu.chainfire.supersu",
-    "com.noshufou.android.su",
-    "com.koushikdutta.superuser",
-    "me.weishu.exp",
-    "org.meowcat.edxposed.manager",
-    "de.robv.android.xposed.installer",
-    "com.saurik.substrate",
-    "com.amphoras.hidemyroot",
-    "com.devadvance.rootcloak",
-    "com.formyhm.hideroot",
-    "com.zachspong.temprootremovejb",
-    "com.ramdroid.appquarantine",
-    nullptr
-};
-
-static void poison_package_manager(JNIEnv *env, const SpoofConfig &config) {
+static void spoof_settings_global(JNIEnv *env, const SpoofConfig &config) {
     (void)config;
-    // Try to get PackageManager and remove hidden packages
-    // This works by calling getPackageInfo for each hidden package
-    // If it throws NameNotFoundException, the package is already hidden
-    jclass pmClass = env->FindClass("android/content/pm/PackageManager");
-    if (!pmClass) { env->ExceptionClear(); return; }
-    env->DeleteLocalRef(pmClass);
+    // Inject into Settings.Global sNameValueCache
+    jclass globalClass = env->FindClass("android/provider/Settings$Global");
+    if (!globalClass) { env->ExceptionClear(); return; }
 
-    LOGI("PM poisoning: %d packages will be hidden from getInstalledPackages",
-         (int)(sizeof(HIDDEN_PACKAGES) / sizeof(HIDDEN_PACKAGES[0]) - 1));
+    jfieldID cacheField = env->GetStaticFieldID(globalClass, "sNameValueCache",
+        "Landroid/provider/Settings$NameValueCache;");
+    if (!cacheField) { env->ExceptionClear(); env->DeleteLocalRef(globalClass); return; }
+
+    jobject cache = env->GetStaticObjectField(globalClass, cacheField);
+    if (!cache) { env->ExceptionClear(); env->DeleteLocalRef(globalClass); return; }
+
+    jclass cacheClass = env->GetObjectClass(cache);
+    jfieldID valuesField = env->GetFieldID(cacheClass, "mValues", "Ljava/util/HashMap;");
+    if (!valuesField) {
+        env->ExceptionClear();
+        valuesField = env->GetFieldID(cacheClass, "mValues", "Landroid/util/ArrayMap;");
+    }
+    if (valuesField) {
+        jobject valuesMap = env->GetObjectField(cache, valuesField);
+        if (valuesMap) {
+            jclass mapClass = env->GetObjectClass(valuesMap);
+            jmethodID putMethod = env->GetMethodID(mapClass, "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+            if (putMethod) {
+                // Hide developer options
+                jstring key1 = env->NewStringUTF("development_settings_enabled");
+                jstring val1 = env->NewStringUTF("0");
+                if (key1 && val1) env->CallObjectMethod(valuesMap, putMethod, key1, val1);
+                
+                // Hide ADB enabled
+                jstring key2 = env->NewStringUTF("adb_enabled");
+                jstring val2 = env->NewStringUTF("0");
+                if (key2 && val2) env->CallObjectMethod(valuesMap, putMethod, key2, val2);
+                
+                if (env->ExceptionCheck()) env->ExceptionClear();
+                if (key1) env->DeleteLocalRef(key1);
+                if (val1) env->DeleteLocalRef(val1);
+                if (key2) env->DeleteLocalRef(key2);
+                if (val2) env->DeleteLocalRef(val2);
+            } else { env->ExceptionClear(); }
+            env->DeleteLocalRef(mapClass);
+            env->DeleteLocalRef(valuesMap);
+        }
+    } else { env->ExceptionClear(); }
+
+    env->DeleteLocalRef(cacheClass);
+    env->DeleteLocalRef(cache);
+    env->DeleteLocalRef(globalClass);
+    LOGI("Settings.Global: Developer options and ADB hidden");
 }
 
 // ============================================================================
@@ -1414,7 +1455,7 @@ void install_jni_hooks(JNIEnv *env, const SpoofConfig &config) {
     spoof_wifi_info(env, config);
     spoof_telephony(env, config);
     spoof_gaid(env, config);
-    poison_package_manager(env, config);
+    spoof_settings_global(env, config);
 
     LOGI("All JNI hooks installed");
 }
