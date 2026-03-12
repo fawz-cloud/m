@@ -1182,6 +1182,7 @@ static void spoof_settings_secure(JNIEnv *env, const SpoofConfig &config) {
 // We intercept by wrapping the native DRM bridge method.
 // ============================================================================
 static jstring proxy_getPropertyString(JNIEnv *env, jobject thiz, jstring jname) {
+    (void)thiz;
     if (!jname) return env->NewStringUTF("");
     const char *name = env->GetStringUTFChars(jname, nullptr);
     std::string prop(name ? name : "");
@@ -1211,6 +1212,7 @@ static jstring proxy_getPropertyString(JNIEnv *env, jobject thiz, jstring jname)
 }
 
 static jbyteArray proxy_getPropertyByteArray(JNIEnv *env, jobject thiz, jstring jname) {
+    (void)thiz;
     if (!jname) return nullptr;
     const char *name = env->GetStringUTFChars(jname, nullptr);
     std::string prop(name ? name : "");
@@ -1231,6 +1233,7 @@ static jbyteArray proxy_getPropertyByteArray(JNIEnv *env, jobject thiz, jstring 
 }
 
 static void spoof_media_drm(JNIEnv *env, const SpoofConfig &config) {
+    (void)config;
     jclass drmClass = env->FindClass("android/media/MediaDrm");
     if (!drmClass) { env->ExceptionClear(); return; }
 
