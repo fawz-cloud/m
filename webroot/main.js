@@ -168,7 +168,7 @@ const DEVICE_PROFILES = [
 
 // All spoof fields
 const SPOOF_FIELDS = [
-    'android_id','gsf_id','imei','meid','serial','bootloader',
+    'android_id','gsf_id','gaid','imei','meid','serial','bootloader',
     'mac_address','bluetooth_mac','wifi_ssid','wifi_bssid',
     'model','brand','manufacturer','device','product','board','hardware',
     'build_id','fingerprint','display','build_type','build_tags','build_user','build_host','incremental',
@@ -458,6 +458,7 @@ function randomizeAll() {
     const op = OPERATORS[Math.floor(Math.random() * OPERATORS.length)];
     const vals = {
         android_id: randomHex(16), gsf_id: randomHex(16),
+        gaid: [randomHex(8),randomHex(4),randomHex(4),randomHex(4),randomHex(12)].join('-'),
         imei: randomIMEI(), meid: randomMEID(),
         serial: randomSerial(), bootloader: p.bootloader,
         mac_address: randomMAC(), bluetooth_mac: randomMAC(),

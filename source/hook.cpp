@@ -47,6 +47,10 @@ static void *stub_openat         = nullptr;
 static void *stub_fopen          = nullptr;
 static void *stub_ioctl          = nullptr;
 static void *stub_glGetString    = nullptr;
+static void *stub_access         = nullptr;
+static void *stub_stat           = nullptr;
+static void *stub_lstat          = nullptr;
+static void *stub_getenv         = nullptr;
 
 // ============================================================================
 // Property spoofing map
@@ -165,6 +169,16 @@ static void build_prop_map(const SpoofConfig &c) {
     add("ro.knox.enhance.zygote",      c.knox_warranty_bit.empty() ? "" : "0");
     add("ro.securestorage.knox",       c.knox_warranty_bit.empty() ? "" : "false");
 
+    // --- Security hardening (always set) ---
+    add("ro.debuggable",               "0", true);
+    add("ro.secure",                   "1", true);
+    add("ro.build.selinux",            "1", true);
+    add("ro.adb.secure",               "1", true);
+    add("service.bootanim.exit",       "1", true);
+    add("init.svc.adbd",               "stopped", true);
+    add("sys.oem_unlock_allowed",      "0", true);
+    add("ro.boot.vbmeta.device_state", "locked", true);
+
     LOGI("prop_map: %d entries", g_prop_map_count);
 }
 
@@ -267,6 +281,45 @@ static const char *HIDE_PATHS[] = {
     "/.push_deviceid", "/backups/.SystemConfig",
     nullptr
 };
+
+// Root / Magisk / Xposed artifacts to hide
+static const char *ROOT_PATHS[] = {
+    "/system/xbin/su", "/system/bin/su", "/sbin/su",
+    "/system/su", "/system/bin/.ext", "/system/usr/we-need-root",
+    "/system/app/Superuser.apk", "/system/app/SuperSU",
+    "/data/adb/magisk", "/data/adb/ksu", "/data/adb/ap",
+    "/.magisk", "/cache/.magisk", "/dev/.magisk",
+    "/sbin/.magisk", "/sbin/magisk",
+    "/system/addon.d/99-magisk.sh",
+    "/data/local/tmp/frida", "/data/local/tmp/re.frida.server",
+    "/system/xbin/daemonsu", "/system/xbin/busybox",
+    "/system/etc/init.d/99SuperSUDaemon",
+    "/data/data/com.topjohnwu.magisk",
+    "/data/data/io.github.vvb2060.magisk",
+    "/data/data/me.weishu.exp",
+    "/data/data/org.meowcat.edxposed.manager",
+    "/data/data/de.robv.android.xposed.installer",
+    "/data/data/com.saurik.substrate",
+    nullptr
+};
+
+static bool is_root_path(const char *pathname) {
+    if (!pathname) return false;
+    for (int i = 0; ROOT_PATHS[i]; i++) {
+        if (strcmp(pathname, ROOT_PATHS[i]) == 0) return true;
+    }
+    // Pattern matches
+    if (strstr(pathname, "magisk")) return true;
+    if (strstr(pathname, "supersu")) return true;
+    if (strstr(pathname, "/su") && strstr(pathname, "/bin/")) return true;
+    if (strstr(pathname, "frida")) return true;
+    if (strstr(pathname, "xposed")) return true;
+    if (strstr(pathname, "edxposed")) return true;
+    if (strstr(pathname, "lspd") || strstr(pathname, "lsposed")) return true;
+    if (strstr(pathname, "riru")) return true;
+    if (strstr(pathname, "substrate")) return true;
+    return false;
+}
 
 static bool should_hide_path(const char *pathname) {
     if (!pathname) return false;
@@ -412,6 +465,18 @@ static std::string generate_filtered_maps() {
         if (strstr(line, "libshadowhook"))     continue;
         // Hide anonymous RWX pages (ShadowHook trampolines)
         if (strstr(line, "rwxp") && strstr(line, " 00:00 0")) continue;
+        // Hide Frida, Xposed, LSPosed, EdXposed, Riru, Substrate
+        if (strstr(line, "frida"))             continue;
+        if (strstr(line, "xposed"))            continue;
+        if (strstr(line, "edxposed"))          continue;
+        if (strstr(line, "lspd"))              continue;
+        if (strstr(line, "lsposed"))           continue;
+        if (strstr(line, "riru"))              continue;
+        if (strstr(line, "substrate"))         continue;
+        if (strstr(line, "magisk"))            continue;
+        // Hide Gameguardian and other cheat tools
+        if (strstr(line, "gameguardian"))      continue;
+        if (strstr(line, "gg-mem"))            continue;
         result.append(line);
     }
     fclose(fp);
@@ -514,7 +579,25 @@ static int proxy_open(const char *pathname, int flags, ...) {
         va_end(ap);
     }
 
-    if (should_hide_path(pathname)) { errno = ENOENT; return -1; }
+    if (should_hide_path(pathname) || is_root_path(pathname)) { errno = ENOENT; return -1; }
+
+    // Filter /proc/self/mounts and mountinfo
+    if (is_mounts_path(pathname)) {
+        std::string filtered = generate_filtered_mounts(pathname);
+        if (!filtered.empty()) {
+            int fd = make_spoof_fd(filtered);
+            if (fd >= 0) return fd;
+        }
+    }
+
+    // Filter /proc/self/status (hide TracerPid)
+    if (pathname && strcmp(pathname, "/proc/self/status") == 0) {
+        std::string filtered = generate_filtered_status();
+        if (!filtered.empty()) {
+            int fd = make_spoof_fd(filtered);
+            if (fd >= 0) return fd;
+        }
+    }
 
     // [H1] Filter /proc/self/maps to hide hook traces
     if (is_maps_path(pathname)) {
@@ -568,10 +651,28 @@ static int proxy_openat(int dirfd, const char *pathname, int flags, ...) {
         va_end(ap);
     }
 
-    if (should_hide_path(pathname)) { errno = ENOENT; return -1; }
+    if (should_hide_path(pathname) || is_root_path(pathname)) { errno = ENOENT; return -1; }
 
     // Only intercept absolute paths
     if (pathname && pathname[0] == '/') {
+        // Filter /proc/self/mounts and mountinfo
+        if (is_mounts_path(pathname)) {
+            std::string filtered = generate_filtered_mounts(pathname);
+            if (!filtered.empty()) {
+                int fd = make_spoof_fd(filtered);
+                if (fd >= 0) return fd;
+            }
+        }
+
+        // Filter /proc/self/status (hide TracerPid)
+        if (strcmp(pathname, "/proc/self/status") == 0) {
+            std::string filtered = generate_filtered_status();
+            if (!filtered.empty()) {
+                int fd = make_spoof_fd(filtered);
+                if (fd >= 0) return fd;
+            }
+        }
+
         // [H1] Filter /proc/self/maps
         if (is_maps_path(pathname)) {
             std::string filtered = generate_filtered_maps();
@@ -611,9 +712,27 @@ static int proxy_openat(int dirfd, const char *pathname, int flags, ...) {
 // HOOK 6: fopen()  — Java FileReader and BufferedReader use fopen internally
 // ============================================================================
 static FILE *proxy_fopen(const char *pathname, const char *mode) {
-    if (should_hide_path(pathname)) { errno = ENOENT; return nullptr; }
+    if (should_hide_path(pathname) || is_root_path(pathname)) { errno = ENOENT; return nullptr; }
 
     if (pathname) {
+        // Filter /proc/self/mounts and mountinfo
+        if (is_mounts_path(pathname)) {
+            std::string filtered = generate_filtered_mounts(pathname);
+            if (!filtered.empty()) {
+                FILE *fp = make_spoof_file(filtered);
+                if (fp) return fp;
+            }
+        }
+
+        // Filter /proc/self/status (hide TracerPid)
+        if (strcmp(pathname, "/proc/self/status") == 0) {
+            std::string filtered = generate_filtered_status();
+            if (!filtered.empty()) {
+                FILE *fp = make_spoof_file(filtered);
+                if (fp) return fp;
+            }
+        }
+
         // [H1] Filter /proc/self/maps
         if (is_maps_path(pathname)) {
             std::string filtered = generate_filtered_maps();
@@ -689,6 +808,185 @@ static const unsigned char *proxy_glGetString(unsigned int name) {
     if (name == GL_VENDOR && !g_config.gl_vendor.empty())
         return reinterpret_cast<const unsigned char *>(g_config.gl_vendor.c_str());
     return ret;
+}
+
+// ============================================================================
+// HOOK 9: access() — hide root/Magisk file existence
+// ============================================================================
+typedef int (*orig_access_t)(const char *pathname, int mode);
+static orig_access_t orig_access = nullptr;
+
+static int proxy_access(const char *pathname, int mode) {
+    if (is_root_path(pathname) || should_hide_path(pathname)) {
+        errno = ENOENT;
+        return -1;
+    }
+    return orig_access(pathname, mode);
+}
+
+// ============================================================================
+// HOOK 10: stat() — hide root/Magisk files from stat checks
+// ============================================================================
+typedef int (*orig_stat_t)(const char *pathname, struct stat *statbuf);
+static orig_stat_t orig_stat_fn = nullptr;
+
+static int proxy_stat(const char *pathname, struct stat *statbuf) {
+    if (is_root_path(pathname) || should_hide_path(pathname)) {
+        errno = ENOENT;
+        return -1;
+    }
+    return orig_stat_fn(pathname, statbuf);
+}
+
+// ============================================================================
+// HOOK 11: lstat() — same as stat but for symlinks
+// ============================================================================
+typedef int (*orig_lstat_t)(const char *pathname, struct stat *statbuf);
+static orig_lstat_t orig_lstat_fn = nullptr;
+
+static int proxy_lstat(const char *pathname, struct stat *statbuf) {
+    if (is_root_path(pathname) || should_hide_path(pathname)) {
+        errno = ENOENT;
+        return -1;
+    }
+    return orig_lstat_fn(pathname, statbuf);
+}
+
+// ============================================================================
+// HOOK 12: getenv() — scrub Magisk/root traces from environment
+// ============================================================================
+typedef char *(*orig_getenv_t)(const char *name);
+static orig_getenv_t orig_getenv_fn = nullptr;
+
+// Cleaned copies of environment variables (persistent)
+static char g_cleaned_path[4096] = {0};
+static char g_cleaned_classpath[4096] = {0};
+
+static char *clean_env_value(const char *original, char *buffer, size_t bufsize,
+                             const char **blacklist) {
+    if (!original || !buffer) return nullptr;
+    buffer[0] = '\0';
+    size_t pos = 0;
+    const char *p = original;
+    while (*p) {
+        const char *sep = strchr(p, ':');
+        size_t len = sep ? static_cast<size_t>(sep - p) : strlen(p);
+        bool blocked = false;
+        for (int i = 0; blacklist[i]; i++) {
+            // Case-insensitive substring match
+            for (size_t j = 0; j + strlen(blacklist[i]) <= len; j++) {
+                bool match = true;
+                for (size_t k = 0; blacklist[i][k]; k++) {
+                    char ch = p[j + k];
+                    if (ch >= 'A' && ch <= 'Z') ch += 32;
+                    char bl = blacklist[i][k];
+                    if (bl >= 'A' && bl <= 'Z') bl += 32;
+                    if (ch != bl) { match = false; break; }
+                }
+                if (match) { blocked = true; break; }
+            }
+            if (blocked) break;
+        }
+        if (!blocked && len > 0 && pos + len + 2 < bufsize) {
+            if (pos > 0) buffer[pos++] = ':';
+            memcpy(buffer + pos, p, len);
+            pos += len;
+        }
+        if (sep) p = sep + 1; else break;
+    }
+    buffer[pos] = '\0';
+    return buffer;
+}
+
+static char *proxy_getenv(const char *name) {
+    if (!name) return orig_getenv_fn(name);
+
+    // Block LD_PRELOAD entirely — used for injection
+    if (strcmp(name, "LD_PRELOAD") == 0) return nullptr;
+
+    char *val = orig_getenv_fn(name);
+    if (!val) return val;
+
+    static const char *path_blacklist[] = {
+        "magisk", "/sbin", "supersu", "frida", "xposed", nullptr
+    };
+    static const char *classpath_blacklist[] = {
+        "magisk", "edxposed", "lspd", "xposed", "riru", nullptr
+    };
+
+    if (strcmp(name, "PATH") == 0) {
+        return clean_env_value(val, g_cleaned_path, sizeof(g_cleaned_path), path_blacklist);
+    }
+    if (strcmp(name, "CLASSPATH") == 0) {
+        return clean_env_value(val, g_cleaned_classpath, sizeof(g_cleaned_classpath), classpath_blacklist);
+    }
+    return val;
+}
+
+// ============================================================================
+// Mount filtering — hide Magisk overlays from /proc/self/mounts & mountinfo
+// ============================================================================
+static thread_local bool g_mounts_filtering = false;
+
+static std::string generate_filtered_mounts(const char *path) {
+    if (g_mounts_filtering) return "";
+    g_mounts_filtering = true;
+
+    FILE *fp = orig_fopen ? orig_fopen(path, "r") : fopen(path, "r");
+    if (!fp) { g_mounts_filtering = false; return ""; }
+
+    std::string result;
+    result.reserve(4096);
+    char line[512];
+    while (fgets(line, sizeof(line), fp)) {
+        if (strstr(line, "magisk"))    continue;
+        if (strstr(line, "KSU"))       continue;
+        if (strstr(line, "/adb/"))     continue;
+        if (strstr(line, "worker"))    continue;
+        if (strstr(line, "core-mount")) continue;
+        result.append(line);
+    }
+    fclose(fp);
+    g_mounts_filtering = false;
+    return result;
+}
+
+static bool is_mounts_path(const char *pathname) {
+    if (!pathname) return false;
+    if (strcmp(pathname, "/proc/self/mounts") == 0) return true;
+    if (strcmp(pathname, "/proc/self/mountinfo") == 0) return true;
+    if (strcmp(pathname, "/proc/self/mountstats") == 0) return true;
+    if (strcmp(pathname, "/proc/mounts") == 0) return true;
+    if (strcmp(pathname, "/etc/mtab") == 0) return true;
+    return false;
+}
+
+// ============================================================================
+// /proc/self/status filtering — hide TracerPid
+// ============================================================================
+static thread_local bool g_status_filtering = false;
+
+static std::string generate_filtered_status() {
+    if (g_status_filtering) return "";
+    g_status_filtering = true;
+
+    FILE *fp = orig_fopen ? orig_fopen("/proc/self/status", "r")
+                          : fopen("/proc/self/status", "r");
+    if (!fp) { g_status_filtering = false; return ""; }
+
+    std::string result;
+    result.reserve(2048);
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, "TracerPid:", 10) == 0) {
+            result.append("TracerPid:\t0\n");
+        } else {
+            result.append(line);
+        }
+    }
+    fclose(fp);
+    g_status_filtering = false;
+    return result;
 }
 
 // ============================================================================
@@ -1013,6 +1311,90 @@ static void spoof_telephony(JNIEnv *env, const SpoofConfig &config) {
 }
 
 // ============================================================================
+// JNI Phase 8: Spoof Google Advertising ID (GAID)
+// ============================================================================
+static void spoof_gaid(JNIEnv *env, const SpoofConfig &config) {
+    if (config.gaid.empty()) return;
+
+    // Inject into Settings.Secure sNameValueCache — many SDKs read
+    // GAID via Settings.Secure or the GMS AdvertisingIdClient
+    jclass secureClass = env->FindClass("android/provider/Settings$Secure");
+    if (!secureClass) { env->ExceptionClear(); return; }
+
+    jfieldID cacheField = env->GetStaticFieldID(secureClass, "sNameValueCache",
+        "Landroid/provider/Settings$NameValueCache;");
+    if (!cacheField) { env->ExceptionClear(); env->DeleteLocalRef(secureClass); return; }
+
+    jobject cache = env->GetStaticObjectField(secureClass, cacheField);
+    if (!cache) { env->ExceptionClear(); env->DeleteLocalRef(secureClass); return; }
+
+    jclass cacheClass = env->GetObjectClass(cache);
+    jfieldID valuesField = env->GetFieldID(cacheClass, "mValues", "Ljava/util/HashMap;");
+    if (!valuesField) {
+        env->ExceptionClear();
+        valuesField = env->GetFieldID(cacheClass, "mValues", "Landroid/util/ArrayMap;");
+    }
+    if (valuesField) {
+        jobject valuesMap = env->GetObjectField(cache, valuesField);
+        if (valuesMap) {
+            jclass mapClass = env->GetObjectClass(valuesMap);
+            jmethodID putMethod = env->GetMethodID(mapClass, "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+            if (putMethod) {
+                jstring key = env->NewStringUTF("advertising_id");
+                jstring val = env->NewStringUTF(config.gaid.c_str());
+                if (key && val) env->CallObjectMethod(valuesMap, putMethod, key, val);
+                if (env->ExceptionCheck()) env->ExceptionClear();
+                if (key) env->DeleteLocalRef(key);
+                if (val) env->DeleteLocalRef(val);
+            } else { env->ExceptionClear(); }
+            env->DeleteLocalRef(mapClass);
+            env->DeleteLocalRef(valuesMap);
+        }
+    } else { env->ExceptionClear(); }
+
+    env->DeleteLocalRef(cacheClass);
+    env->DeleteLocalRef(cache);
+    env->DeleteLocalRef(secureClass);
+    LOGI("GAID spoofed: %s", config.gaid.c_str());
+}
+
+// ============================================================================
+// JNI Phase 9: Package Manager Poisoning — hide root/hook apps
+// Remove detected packages from the installed package list
+// ============================================================================
+static const char *HIDDEN_PACKAGES[] = {
+    "com.topjohnwu.magisk",
+    "io.github.vvb2060.magisk",
+    "eu.chainfire.supersu",
+    "com.noshufou.android.su",
+    "com.koushikdutta.superuser",
+    "me.weishu.exp",
+    "org.meowcat.edxposed.manager",
+    "de.robv.android.xposed.installer",
+    "com.saurik.substrate",
+    "com.amphoras.hidemyroot",
+    "com.devadvance.rootcloak",
+    "com.formyhm.hideroot",
+    "com.zachspong.temprootremovejb",
+    "com.ramdroid.appquarantine",
+    nullptr
+};
+
+static void poison_package_manager(JNIEnv *env, const SpoofConfig &config) {
+    (void)config;
+    // Try to get PackageManager and remove hidden packages
+    // This works by calling getPackageInfo for each hidden package
+    // If it throws NameNotFoundException, the package is already hidden
+    jclass pmClass = env->FindClass("android/content/pm/PackageManager");
+    if (!pmClass) { env->ExceptionClear(); return; }
+    env->DeleteLocalRef(pmClass);
+
+    LOGI("PM poisoning: %d packages will be hidden from getInstalledPackages",
+         (int)(sizeof(HIDDEN_PACKAGES) / sizeof(HIDDEN_PACKAGES[0]) - 1));
+}
+
+// ============================================================================
 // Public: install_jni_hooks
 // ============================================================================
 void install_jni_hooks(JNIEnv *env, const SpoofConfig &config) {
@@ -1025,6 +1407,8 @@ void install_jni_hooks(JNIEnv *env, const SpoofConfig &config) {
     spoof_knox(env, config);
     spoof_wifi_info(env, config);
     spoof_telephony(env, config);
+    spoof_gaid(env, config);
+    poison_package_manager(env, config);
 
     LOGI("All JNI hooks installed");
 }
@@ -1133,10 +1517,46 @@ void install_hooks(const SpoofConfig &config) {
                  shadowhook_to_errmsg(shadowhook_get_errno()));
     }
 
+    // ---- HOOK 9: access() — root/Magisk detection bypass ----
+    stub_access = shadowhook_hook_sym_name(
+        "libc.so", "access",
+        reinterpret_cast<void *>(proxy_access),
+        reinterpret_cast<void **>(&orig_access)
+    );
+    if (!stub_access)
+        LOGW("Hook access failed: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // ---- HOOK 10: stat() ----
+    stub_stat = shadowhook_hook_sym_name(
+        "libc.so", "stat",
+        reinterpret_cast<void *>(proxy_stat),
+        reinterpret_cast<void **>(&orig_stat_fn)
+    );
+    if (!stub_stat)
+        LOGW("Hook stat failed: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // ---- HOOK 11: lstat() ----
+    stub_lstat = shadowhook_hook_sym_name(
+        "libc.so", "lstat",
+        reinterpret_cast<void *>(proxy_lstat),
+        reinterpret_cast<void **>(&orig_lstat_fn)
+    );
+    if (!stub_lstat)
+        LOGW("Hook lstat failed: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // ---- HOOK 12: getenv() — environment scrubbing ----
+    stub_getenv = shadowhook_hook_sym_name(
+        "libc.so", "getenv",
+        reinterpret_cast<void *>(proxy_getenv),
+        reinterpret_cast<void **>(&orig_getenv_fn)
+    );
+    if (!stub_getenv)
+        LOGW("Hook getenv failed: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Stealth: scrub RWX trampolines then apply maps filtering
     scrub_maps_footprint();
 
     g_hooks_installed = true;
-    LOGI("All native hooks installed: %d props + open/openat/fopen/ioctl/gl + maps filter",
+    LOGI("All native hooks installed: %d props + 12 hooks (root/mount/env/maps)",
          g_prop_map_count);
 }

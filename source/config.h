@@ -10,6 +10,7 @@ struct SpoofConfig {
     // === Device Identity ===
     std::string android_id;
     std::string gsf_id;
+    std::string gaid;  // Google Advertising ID
 
     // === Network ===
     std::string mac_address;
